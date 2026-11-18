@@ -81,7 +81,8 @@ internal sealed class ReachMapScene {
    }
   }
   if(writer.decodedBsps==0)throw new Exception("No terrain BSP could be decoded. "+string.Join("; ",writer.warnings));
-  writer.Save("scene.json",new{version=1,kind="halo3_map_scene",game,scenario=tag.TagName,units="halo",matrix_convention="row_vector",expected_bsps=writer.expectedBsps,decoded_bsps=writer.decodedBsps,
+  var skyLighting=game=="halo2"?ClassicSupport.SkyLighting(cache,writer.warnings):null;
+  writer.Save("scene.json",new{version=1,kind="halo3_map_scene",game,scenario=tag.TagName,units="halo",matrix_convention="row_vector",expected_bsps=writer.expectedBsps,decoded_bsps=writer.decodedBsps,sky_lighting=skyLighting,
    meshes=writer.meshes,placements=writer.placements,counts=writer.counts,warnings=writer.warnings.Distinct().ToArray(),
    limitations=new[]{"Static visual layout only; not a reconstructed playable scenario.","AI, player starts, weapons, vehicles, scripts, triggers, animated device state, baked lighting and original collision are not imported.","Variant selection is approximated when multiple render permutations exist; affected assets are reported.","All BSPs are imported together."}});
   writer.Progress("Map scene extracted: "+writer.placements.Count+" mesh placements");

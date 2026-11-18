@@ -15,7 +15,7 @@ TOKEN = re.compile(r'"[^"]*"|[^\s"]+')
 LOD_TOKEN = re.compile(r'l[1-6]', re.IGNORECASE)
 SLOT_TOKEN = re.compile(r'\(\d+\)')
 # Material symbols used by Halo source files (see the Tool documentation).
-SYMBOLS = '%#!@*$^-&?<|>=+.'
+SYMBOLS = '%#!@*$^-&?<|>=+.{[]('
 # Trailing "key:value" material parameters (lightmap resolution, power, ...).
 MATERIAL_PARAMETER = re.compile(r'\s+[A-Za-z]{1,3}:\S*\s*$')
 BM_FLAG_NAMES = ('two_sided', 'transparent_1_sided', 'transparent_2_sided', 'render_only',
@@ -27,7 +27,8 @@ BM_FLAG_NAMES = ('two_sided', 'transparent_1_sided', 'transparent_2_sided', 'ren
 SYMBOL_FLAGS = {'%': 'two_sided', '#': 'transparent_1_sided', '!': 'render_only',
                 '@': 'collision_only', '*': 'sphere_collision_only', '$': 'fog_plane',
                 '^': 'ladder', '-': 'breakable', '&': 'ai_deafening', '?': 'no_shadow',
-                '<': 'shadow_only', '|': 'lightmap_only', '>': 'precise'}
+                '<': 'shadow_only', '|': 'lightmap_only', '>': 'precise',
+                '{': 'ignored_by_lightmaps', '[': 'blocks_sound', ']': 'decal_offset'}
 
 
 class SourceError(RuntimeError):

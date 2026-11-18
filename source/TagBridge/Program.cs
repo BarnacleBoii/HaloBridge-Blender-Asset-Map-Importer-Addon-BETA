@@ -10,13 +10,29 @@ using System.Security.Cryptography;
 using Bungie;
 using Bungie.Tags;
 
-class Job { public int version,section; public float radius; public string operation,kit,scenario,output,template,asset_name; public string[] sources; public float[] position; public ShaderImport[] shaders; public Placement[] placements; public Dictionary<string,string> previous; }
-class ShaderImport { public string path,base_map,normal_map,alpha_map; public bool sky,additive; }
+class Job { public int version,section; public float radius; public string operation,kit,scenario,output,template,asset_name; public string[] sources; public float[] position; public ShaderImport[] shaders; public Placement[] placements; public Dictionary<string,string> previous; public SkyLight[] sky_lights; public StartPoint[] starts; public KillVolume[] kill_volumes; public NetObject[] netgame; }
+// A multiplayer object (CTF flag spawn, teleporter, hill ...) placed as a crate with multiplayer data.
+class NetObject { public string tag; public float[] position; public float yaw,radius,height; public int team,channel,shape; public bool bare; }
+// Gameplay from the original map: player starting locations and kill trigger volumes.
+class StartPoint { public float[] position; public float facing; public int team; }
+class KillVolume { public string name; public float[] position,forward,up,extents; }
+class SkyLight { public float[] direction,intensity; public float solid_angle; }
+class ShaderImport { public string path,base_map,normal_map,alpha_map,blend_map,blend,detail_map,detail_map2,material; public float[] normal_scale,detail_scale,detail2_scale; public int sort_layer; public bool sky,additive,terrain; public TerrainLayer[] layers; }
+class TerrainLayer { public TerrainMap[] maps; }
+class TerrainMap { public string usage,bitmap; public float scale_x=1,scale_y=1,offset_x,offset_y; }
 class Placement { public Dictionary<string,string> paint; public string id,tag; public float[] position,rotation; public float scale=1; }
 class Program {
  [DllImport("kernel32.dll",CharSet=CharSet.Unicode)] static extern bool SetDllDirectory(string p);
  static string kit; static JavaScriptSerializer js=new JavaScriptSerializer {MaxJsonLength=int.MaxValue};
  static int Main(string[] args) {try {
+  // ManagedBlam raises .NET assertions on some tags (for example reading a render model's
+  // stored source files). Never show the "Assertion Failed" dialog from a background job:
+  // write it to the job log instead, and let the caller skip that one item.
+  foreach(System.Diagnostics.TraceListener listener in System.Diagnostics.Trace.Listeners) {
+   var standard=listener as System.Diagnostics.DefaultTraceListener;
+   if(standard!=null)standard.AssertUiEnabled=false;
+  }
+  System.Diagnostics.Trace.Listeners.Add(new System.Diagnostics.ConsoleTraceListener(true));
   var j=js.Deserialize<Job>(File.ReadAllText(args[0])); if(j.version!=1)throw new Exception("Unsupported job version");
   kit=Path.GetFullPath(j.kit);SetDllDirectory(kit);Environment.CurrentDirectory=kit;
   AppDomain.CurrentDomain.AssemblyResolve+=(s,e)=>{string p=Path.Combine(kit,"bin",new AssemblyName(e.Name).Name+".dll");return File.Exists(p)?Assembly.LoadFrom(p):null;};
@@ -42,6 +58,11 @@ class TagOps {
   if(j.operation=="list_skies") { ListSkies(j);return; }
   if(j.operation=="dump_tags") { DumpTags(j);return; }
   if(j.operation=="sky_object") { SkyObject(j);return; }
+  if(j.operation=="lightmap_policy") { LightmapPolicy(j);return; }
+  if(j.operation=="lightmap_mesh") { LightmapMesh(j);return; }
+  if(j.operation=="lightmap_write") { LightmapWrite(j);return; }
+  if(j.operation=="pervertex_read") { PervertexRead(j);return; }
+  if(j.operation=="pervertex_write") { PervertexWrite(j);return; }
   if(j.operation=="recover_source") { RecoverSource(j);return; }
   if(j.operation=="model_collision"){ModelCollision(j);return;}
   if(j.operation=="scenario_scene"){ScenarioScene(j);return;}
@@ -92,6 +113,8 @@ class TagOps {
      foreach(var name in new[]{"bsp index","insertion point index"}){var index=fields.FirstOrDefault(f=>f.FieldName==name) as TagFieldElementInteger;if(index!=null)index.Data=0;}
      tag.Save();
     }
+   } else if(j.operation=="gameplay") {
+    Gameplay(tag,j);tag.Save();
    } else if(j.operation=="environment") {
     using(var donor=new TagFile(TagPath.FromPathAndType(Safe(j.template),"scnr*"))) {
      var originalSkies=F<TagFieldBlock>(donor.Fields,"skies");var destinationSkies=F<TagFieldBlock>(tag.Fields,"skies");
@@ -208,18 +231,23 @@ class TagOps {
  }
  static void PrepareBitmaps(Job j) {
   string prefix=Path.GetDirectoryName(Safe(j.scenario))+"\\bitmaps\\reach\\";
-  foreach(var item in j.shaders??new ShaderImport[0])foreach(var pair in new Dictionary<string,string>{{"base",item.base_map},{"normal",item.normal_map},{"alpha",item.alpha_map}}) {
+  foreach(var item in j.shaders??new ShaderImport[0]) {
+   var bitmaps=new List<KeyValuePair<string,string>>{new KeyValuePair<string,string>("base",item.base_map),new KeyValuePair<string,string>("normal",item.normal_map),new KeyValuePair<string,string>("alpha",item.alpha_map),new KeyValuePair<string,string>("blend",item.blend_map),new KeyValuePair<string,string>("base",item.detail_map),new KeyValuePair<string,string>("base",item.detail_map2)};
+   foreach(var layer in item.layers??new TerrainLayer[0])foreach(var map in layer.maps??new TerrainMap[0])bitmaps.Add(new KeyValuePair<string,string>(map.usage=="bump"?"normal":"base",map.bitmap));
+   foreach(var pair in bitmaps) {
    if(String.IsNullOrEmpty(pair.Value))continue;
    string target=Safe(pair.Value);
    if(!target.StartsWith(prefix,StringComparison.OrdinalIgnoreCase))throw new Exception("Converted bitmap is outside this level.");
    var path=TagPath.FromPathAndType(target,"bitm");
    using(var tag=new TagFile()) {
     if(File.Exists(Path.Combine(kit,"tags",target+".bitmap")))tag.Load(path);else tag.New(path);
-    F<TagFieldEnum>(tag.Fields,"Usage").Value=pair.Key=="normal"?13:pair.Key=="alpha"?18:0;
+    // Usage 18 is "Blend Map (linear for terrains)", also right for alpha-test masks.
+    F<TagFieldEnum>(tag.Fields,"Usage").Value=pair.Key=="normal"?13:pair.Key=="alpha"||pair.Key=="blend"?18:0;
     F<TagFieldEnum>(tag.Fields,"force bitmap format").Value=2;
     F<TagFieldEnum>(tag.Fields,"curve mode").Value=pair.Key=="base"?2:1;
     Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(kit,"tags",target)));
     tag.Save();
+   }
    }
   }
   File.WriteAllText(j.output,js.Serialize(new{version=1,ok=true}));
@@ -231,6 +259,7 @@ class TagOps {
   foreach(var item in j.shaders??new ShaderImport[0]) {
    string target=Safe(item.path);
    if(!target.StartsWith(level+"shaders\\",StringComparison.OrdinalIgnoreCase) && !target.StartsWith(level+"sky\\shaders\\",StringComparison.OrdinalIgnoreCase))throw new Exception("Generated shader is outside this level.");
+   if(item.terrain){verified.Add(TerrainShader(item,target));continue;}
    using(var tag=new TagFile(TagPath.FromPathAndType("shaders\\invalid","rmsh"))) {
     var fields=S(tag.Fields,"render_method");
     var options=F<TagFieldBlock>(fields,"options");
@@ -240,20 +269,29 @@ class TagOps {
     F<TagFieldElementInteger>(options.Elements[9].Fields,"short").Data=1;
     // Converted skies have no sky lighting, so their shaders are unlit (material model
     // "none") and show their texture as self-illumination ("from_diffuse").
-    if(item.sky){F<TagFieldElementInteger>(options.Elements[1].Fields,"short").Data=0;F<TagFieldElementInteger>(options.Elements[4].Fields,"short").Data=4;F<TagFieldElementInteger>(options.Elements[6].Fields,"short").Data=4;}
-    // blend_mode "additive" (Halo CE / Halo 2 sky layers); alpha test does not apply to it.
-    if(item.sky && item.additive){F<TagFieldElementInteger>(options.Elements[7].Fields,"short").Data=1;F<TagFieldElementInteger>(options.Elements[2].Fields,"short").Data=0;}
+    // Halo 2 see-through world layers (blend "alpha"/"additive" outside the sky) are unlit the same way.
+    bool layer=item.sky || item.additive || item.blend=="alpha";
+    if(layer){F<TagFieldElementInteger>(options.Elements[1].Fields,"short").Data=0;F<TagFieldElementInteger>(options.Elements[4].Fields,"short").Data=4;F<TagFieldElementInteger>(options.Elements[6].Fields,"short").Data=4;}
+    // blend_mode "additive" (Halo CE / Halo 2 sky layers, Halo 2 glows); alpha test does not apply to it.
+    if(item.additive){F<TagFieldElementInteger>(options.Elements[7].Fields,"short").Data=1;F<TagFieldElementInteger>(options.Elements[2].Fields,"short").Data=0;}
+    // blend_mode "alpha_blend" (Halo 2 sky layers, Ascension's cloud sea): the base map's alpha is the coverage.
+    if(item.blend=="alpha"){F<TagFieldElementInteger>(options.Elements[7].Fields,"short").Data=3;F<TagFieldElementInteger>(options.Elements[2].Fields,"short").Data=0;}
+    // Albedo "detail_blend" (Halo 2 detail_blend ground): the base map's alpha blends detail_map
+    // (alpha 0) and detail_map2 (alpha 1); "default" multiplies one detail_map over the base.
+    if(!item.sky && !String.IsNullOrEmpty(item.detail_map) && !String.IsNullOrEmpty(item.detail_map2))F<TagFieldElementInteger>(options.Elements[0].Fields,"short").Data=1;
+    // Sort layer (1 pre-pass, 2 normal, 3 post-pass): keeps a Halo 2 sky's layer order.
+    if(item.sort_layer>=1 && item.sort_layer<=3)F<TagFieldEnum>(fields,"sort layer").Value=item.sort_layer;
     var parameters=F<TagFieldBlock>(fields,"parameters");while(parameters.Elements.Count>0)parameters.RemoveElement(parameters.Elements.Count-1);
-    var maps=new Dictionary<string,string>{{"base_map",item.base_map},{"bump_map",item.normal_map},{"alpha_test_map",item.alpha_map}};
-    foreach(var pair in maps) {
-     if(String.IsNullOrEmpty(pair.Value))continue;
-     string bitmap=Safe(pair.Value);
+    var maps=new List<Tuple<string,string,float[]>>{Tuple.Create("base_map",item.base_map,(float[])null),Tuple.Create("bump_map",item.normal_map,item.normal_scale),Tuple.Create("alpha_test_map",item.alpha_map,(float[])null)};
+    if(!item.sky){maps.Add(Tuple.Create("detail_map",item.detail_map,item.detail_scale));if(!String.IsNullOrEmpty(item.detail_map))maps.Add(Tuple.Create("detail_map2",item.detail_map2,item.detail2_scale));}
+    foreach(var map in maps) {
+     if(String.IsNullOrEmpty(map.Item2))continue;
+     string bitmap=Safe(map.Item2);
      if(!File.Exists(Path.Combine(kit,"tags",bitmap+".bitmap")))throw new Exception("Converted bitmap missing: "+bitmap);
-     var f=parameters.AddElement().Fields;
-     F<TagFieldElementStringID>(f,"parameter name").Data=pair.Key;
-     F<TagFieldEnum>(f,"parameter type").Value=0;
-     F<TagFieldReference>(f,"bitmap").Path=TagPath.FromPathAndType(bitmap,"bitm");
+     var scale=map.Item3!=null && map.Item3.Length==2 && map.Item3.All(x=>x>0 && !float.IsInfinity(x))?map.Item3:new float[]{1,1};
+     BitmapParameter(parameters,map.Item1,bitmap,scale[0],scale[1]);
     }
+    SetMaterial(tag.Fields,item.material);
     Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(kit,"tags",target)));
     tag.SaveAs(TagPath.FromPathAndType(target,"rmsh"));
    }
@@ -264,6 +302,76 @@ class TagOps {
    }
   }
   File.WriteAllText(j.output,js.Serialize(new{version=1,ok=true,shaders=verified}));
+ }
+ // The shader's global material (globals "materials"): Halo 3 takes the surface's footstep sounds,
+ // impact effects and decals from it. Generated shaders otherwise keep "default_material".
+ static void SetMaterial(TagField[] fields,string material) {
+  if(String.IsNullOrEmpty(material))return;
+  var field=fields.FirstOrDefault(f=>f.FieldName=="material name");if(field==null)return;
+  var data=field.GetType().GetProperty("Data");if(data!=null && data.CanWrite)data.SetValue(field,material,null);
+ }
+ // A constant animated-parameter function (as Guerilla stores one): type 1, flags 0x20, value.
+ static byte[] ConstantFunction(float value) {
+  var data=new byte[32];data[0]=1;data[1]=0x20;
+  BitConverter.GetBytes(value).CopyTo(data,4);BitConverter.GetBytes(value).CopyTo(data,8);
+  return data;
+ }
+ static void BitmapParameter(TagFieldBlock parameters,string name,string bitmap,float scaleX,float scaleY,float offsetX=0,float offsetY=0) {
+  if(!File.Exists(Path.Combine(kit,"tags",bitmap+".bitmap")))throw new Exception("Terrain bitmap missing: "+bitmap);
+  var f=parameters.AddElement().Fields;
+  F<TagFieldElementStringID>(f,"parameter name").Data=name;
+  F<TagFieldEnum>(f,"parameter type").Value=0;
+  F<TagFieldReference>(f,"bitmap").Path=TagPath.FromPathAndType(bitmap,"bitm");
+  var animated=F<TagFieldBlock>(f,"animated parameters");
+  // 3/4 = scale x/y (repeats across the UV tile), 5/6 = translation x/y: uv * scale + translation.
+  var values=new List<KeyValuePair<int,float>>();
+  if(scaleX!=1 || scaleY!=1){values.Add(new KeyValuePair<int,float>(3,scaleX));values.Add(new KeyValuePair<int,float>(4,scaleY));}
+  if(offsetX!=0)values.Add(new KeyValuePair<int,float>(5,offsetX));
+  if(offsetY!=0)values.Add(new KeyValuePair<int,float>(6,offsetY));
+  foreach(var axis in values) {
+   var a=animated.AddElement().Fields;
+   F<TagFieldEnum>(a,"type").Value=axis.Key;
+   F<TagFieldData>(S(a,"function"),"data").SetData(ConstantFunction(axis.Value));
+  }
+ }
+ static object TerrainShader(ShaderImport item,string target) {
+  // Halo 3 shader_terrain: blend map channels R/G/B/A weight material_0..3. Each
+  // material is base_map (the layer texture, tiled) times a neutral 50% gray detail
+  // map, so colors match the layer images (the shader multiplies by 4.59 = 1/0.5^2.2).
+  var layers=item.layers??new TerrainLayer[0];
+  if(layers.Length<1 || layers.Length>4)throw new Exception("A terrain shader needs 1 to 4 layers.");
+  if(String.IsNullOrEmpty(item.blend_map))throw new Exception("The terrain blend map is missing.");
+  var path=TagPath.FromPathAndType(target,"rmtr");
+  Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(kit,"tags",target)));
+  using(var tag=new TagFile()) {
+   tag.New(path);
+   var fields=S(tag.Fields,"render_method");
+   F<TagFieldReference>(fields,"definition").Path=TagPath.FromPathAndType("shaders\\terrain","rmdf");
+   var options=F<TagFieldBlock>(fields,"options");
+   while(options.Elements.Count>0)options.RemoveElement(options.Elements.Count-1);
+   // blending, environment_map, material_0..3 (0 = diffuse_only, 2 = off).
+   for(int i=0;i<6;i++){var o=options.AddElement().Fields;F<TagFieldElementInteger>(o,"short").Data=i>=2 && i-2>=layers.Length?2:0;}
+   var parameters=F<TagFieldBlock>(fields,"parameters");
+   while(parameters.Elements.Count>0)parameters.RemoveElement(parameters.Elements.Count-1);
+   BitmapParameter(parameters,"blend_map",Safe(item.blend_map),1,1);
+   for(int i=0;i<layers.Length;i++) {
+    var maps=layers[i].maps??new TerrainMap[0];
+    if(!maps.Any(m=>m.usage=="base"))throw new Exception("Terrain layer "+(i+1)+" has no texture.");
+    foreach(var map in maps) {
+     string parameter=map.usage=="base"?"base_map_m_":map.usage=="detail"?"detail_map_m_":map.usage=="bump"?"bump_map_m_":null;
+     if(parameter==null)throw new Exception("Unknown terrain map: "+map.usage);
+     BitmapParameter(parameters,parameter+i,Safe(map.bitmap),map.scale_x,map.scale_y,map.offset_x,map.offset_y);
+    }
+    // Without a detail map the layer uses neutral 50% gray, so its color is the base texture's.
+    if(!maps.Any(m=>m.usage=="detail"))BitmapParameter(parameters,"detail_map_m_"+i,"shaders\\default_bitmaps\\bitmaps\\gray_50_percent",1,1);
+   }
+   tag.Save();
+  }
+  using(var tag=new TagFile(path)) {
+   var references=AllReferences(tag.Fields).Where(r=>r.Path!=null).Select(r=>r.Path.RelativePathWithExtension).ToArray();
+   if(!references.Contains(item.blend_map+".bitmap") || layers.SelectMany(l=>l.maps).Any(m=>!references.Contains(m.bitmap+".bitmap")))throw new Exception("Generated terrain shader lost a texture.");
+   return new{shader=target,references=references};
+  }
  }
  static long I(TagField[] f,string name){return F<TagFieldElementInteger>(f,name).Data;}
  static IEnumerable<TagFieldReference> References(TagField[] fields) {
@@ -443,6 +551,24 @@ class TagOps {
   string level=Path.GetDirectoryName(Safe(j.scenario))+"\\";string target=Safe(j.template);
   if(!target.StartsWith(level,StringComparison.OrdinalIgnoreCase))throw new Exception("The converted sky is outside this level.");
   if(!File.Exists(Path.Combine(kit,"tags",target+".render_model")))throw new Exception("Tool did not build the sky render model: "+target);
+  // The sky's own sun and sky light (from a Halo 2 sky), which lightmaps use as Bungie's skies' 200 sky lights.
+  int lightCount=0;
+  if(j.sky_lights!=null && j.sky_lights.Length>0) {
+   if(j.sky_lights.Length>200)throw new Exception("A sky has at most 200 sky lights.");
+   foreach(var light in j.sky_lights)if(light.direction==null||light.direction.Length!=3||light.intensity==null||light.intensity.Length!=3||!(light.solid_angle>0)||light.direction.Concat(light.intensity).Any(x=>float.IsNaN(x)||float.IsInfinity(x)||x<-1e7||x>1e7))throw new Exception("Invalid sky light");
+   using(var render=new TagFile(TagPath.FromPathAndType(target,"mode"))) {
+    var block=F<TagFieldBlock>(render.Fields,"sky lights");
+    while(block.Elements.Count>0)block.RemoveElement(block.Elements.Count-1);
+    foreach(var light in j.sky_lights) {
+     var f=block.AddElement().Fields;
+     F<TagFieldElementArraySingle>(f,"direction").Data=light.direction;
+     F<TagFieldElementArraySingle>(f,"intensity").Data=light.intensity;
+     F<TagFieldElementSingle>(f,"solid angle").Data=light.solid_angle;
+    }
+    render.Save();
+    lightCount=block.Elements.Count;
+   }
+  }
   using(var model=new TagFile()) {
    var path=TagPath.FromPathAndType(target,"hlmt");
    if(File.Exists(Path.Combine(kit,"tags",target+".model")))model.Load(path);else model.New(path);
@@ -464,7 +590,263 @@ class TagOps {
    foreach(var element in skies.Elements)F<TagFieldReference>(element.Fields,"sky").Path=TagPath.FromPathAndType(target,"scen");
    tag.Save();
   }
-  File.WriteAllText(j.output,js.Serialize(new{version=1,ok=true,sky=target+".scenery"}));
+  File.WriteAllText(j.output,js.Serialize(new{version=1,ok=true,sky=target+".scenery",sky_lights=lightCount}));
+ }
+ // Tool gives every instanced geometry piece per-vertex lighting: the bake stores light only at
+ // triangle corners, which smears it across large, low-detail triangles (Halo 2 terrain) and
+ // leaves hard steps where pieces meet. Pieces at least j.radius world units across (bounding
+ // sphere radius) get per-pixel lighting ("per-pixel shared", 3; Tool refuses "per-pixel seperate") instead; small ones keep
+ // per-vertex, which suits them and keeps the lightmap page for the large surfaces.
+ // The original map's player starting locations replace the scenario's (Halo 3 and ODST name the
+ // BSP or insertion point index differently; fields a game lacks are skipped), and its kill trigger
+ // volumes become Halo 3 trigger volumes listed as kill triggers.
+ static TagField Opt(TagField[] fields,string name){return fields.FirstOrDefault(f=>f.FieldName==name);}
+ static void SetFloats(TagField[] fields,string name,float[] values) {
+  var f=Opt(fields,name) as TagFieldElementArraySingle;if(f==null||values==null)return;
+  var data=f.Data;for(int i=0;i<data.Length && i<values.Length;i++)data[i]=values[i];f.Data=data;
+ }
+ static void Gameplay(TagFile tag,Job j) {
+  var result=new Dictionary<string,object>();
+  if(j.starts!=null && j.starts.Length>0) {
+   var starts=F<TagFieldBlock>(tag.Fields,"player starting locations");
+   while(starts.Elements.Count>0)starts.RemoveElement(starts.Elements.Count-1);
+   foreach(var s in j.starts) {
+    if(s.position==null||s.position.Length!=3||s.position.Any(x=>Single.IsNaN(x)||Single.IsInfinity(x)))continue;
+    var fields=starts.AddElement().Fields;
+    SetFloats(fields,"position",s.position);
+    var facing=Opt(fields,"facing");
+    if(facing is TagFieldElementArraySingle)SetFloats(fields,"facing",new[]{s.facing,0f});
+    else if(facing is TagFieldElementSingle)((TagFieldElementSingle)facing).Data=s.facing;
+    foreach(var name in new[]{"bsp index","insertion point index"}){var index=Opt(fields,name) as TagFieldElementInteger;if(index!=null)index.Data=0;}
+   }
+   result["starts"]=starts.Elements.Count;
+  }
+  if(j.kill_volumes!=null && j.kill_volumes.Length>0) {
+   var volumes=F<TagFieldBlock>(tag.Fields,"trigger volumes");
+   int added=0;
+   foreach(var k in j.kill_volumes) {
+    string name=(k.name??"").Length>0?k.name:"kill_"+added;
+    // Replace a volume of the same name (prepared again) instead of adding a copy.
+    int index=-1;
+    for(int i=0;i<volumes.Elements.Count;i++){var n=Opt(volumes.Elements[i].Fields,"name") as TagFieldElementStringID;if(n!=null && n.Data==name)index=i;}
+    if(index<0){index=volumes.Elements.Count;volumes.AddElement();}
+    var fields=volumes.Elements[index].Fields;
+    var nf=Opt(fields,"name") as TagFieldElementStringID;if(nf!=null)nf.Data=name;
+    SetFloats(fields,"forward",k.forward);SetFloats(fields,"up",k.up);SetFloats(fields,"position",k.position);SetFloats(fields,"extents",k.extents);
+    // "C" is the box's half diagonal (Guardian: extents 98.1 x 111.4 x 14.5 -> 74.6).
+    var c=Opt(fields,"C") as TagFieldElementSingle;
+    if(c!=null && k.extents!=null && k.extents.Length==3)c.Data=(float)(Math.Sqrt(k.extents[0]*k.extents[0]+k.extents[1]*k.extents[1]+k.extents[2]*k.extents[2])/2);
+    // A trigger volume is a kill volume when its "kill trigger volume" is set: Bungie's Narrows
+    // marks kill_drop 0 and its other volumes -1, and the "scenario kill triggers" block stays
+    // empty in the tag (it is built when the map is compiled).
+    var back=Opt(fields,"kill trigger volume") as TagFieldBlockIndex;if(back!=null)back.Value=added;
+    added++;
+   }
+   result["kill_volumes"]=added;
+  }
+  if(j.netgame!=null)result["netgame"]=Netgame(tag,j.netgame,Path.GetDirectoryName(Safe(j.scenario)));
+  File.WriteAllText(j.output,js.Serialize(new{version=1,ok=true,gameplay=result}));
+ }
+ // Multiplayer objects as crates named hb_ng_<n>: updated in place when prepared again; ones no
+ // longer wanted are removed (their names unlinked), and every crate's name link is reconciled.
+ // A level copy of a multiplayer crate with no model and no effects: a converted level shows its
+ // own teleporter (Halo 2's teleporter scenery, Halo CE's pads), so Halo 3's model and glow would
+ // sit on top of it. The copy keeps the crate's gameplay (teleporting, its boundary) and sounds.
+ static string BareCrate(string level,string source,Dictionary<string,string> made) {
+  string done;if(made.TryGetValue(source,out done))return done;
+  string target=level+"\\objects\\"+source.Substring(source.LastIndexOf('\\')+1)+"_bare";
+  string from=Path.Combine(kit,"tags",source+".crate"),to=Path.Combine(kit,"tags",target+".crate");
+  if(!File.Exists(from))return source;
+  Directory.CreateDirectory(Path.GetDirectoryName(to));File.Copy(from,to,true);
+  using(var t=new TagFile(TagPath.FromPathAndType(target,"bloc"))) {
+   var obj=S(t.Fields,"object");
+   F<TagFieldReference>(obj,"model").Path=null;
+   var radius=F<TagFieldElementSingle>(obj,"bounding radius");if(radius.Data<1)radius.Data=1;
+   var attachments=F<TagFieldBlock>(obj,"attachments");
+   for(int i=attachments.Elements.Count-1;i>=0;i--){var r=F<TagFieldReference>(attachments.Elements[i].Fields,"type").Path;if(r==null||!r.RelativePathWithExtension.EndsWith(".sound_looping",StringComparison.OrdinalIgnoreCase))attachments.RemoveElement(i);}
+   t.Save();
+  }
+  made[source]=target;return target;
+ }
+ static int Netgame(TagFile tag,NetObject[] objects,string level) {
+  var made=new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase);
+  foreach(var o in objects)if(o.bare && !String.IsNullOrEmpty(o.tag))o.tag=BareCrate(level,Safe(o.tag),made);
+  var crates=F<TagFieldBlock>(tag.Fields,"crates");var palette=F<TagFieldBlock>(tag.Fields,"crate palette");var names=F<TagFieldBlock>(tag.Fields,"object names");
+  Func<int,string> crateName=i=>{int ni=F<TagFieldBlockIndex>(crates.Elements[i].Fields,"name").Value;return ni>=0 && ni<names.Elements.Count?F<TagFieldElementStringNormal>(names.Elements[ni].Fields,"name").Data:"";};
+  var valid=objects.Where(o=>o.position!=null && o.position.Length==3 && !o.position.Any(x=>Single.IsNaN(x)||Single.IsInfinity(x)) && File.Exists(Path.Combine(kit,"tags",Safe(o.tag)+".crate"))).ToArray();
+  var wanted=new HashSet<string>(Enumerable.Range(0,valid.Length).Select(i=>"hb_ng_"+i));
+  for(int i=crates.Elements.Count-1;i>=0;i--){string n=crateName(i);if(n.StartsWith("hb_ng_") && !wanted.Contains(n)){int ni=F<TagFieldBlockIndex>(crates.Elements[i].Fields,"name").Value;crates.RemoveElement(i);if(ni>=0)F<TagFieldBlockIndex>(names.Elements[ni].Fields,"scenario_datum_index").Value=-1;}}
+  for(int k=0;k<valid.Length;k++) {
+   var o=valid[k];string name="hb_ng_"+k;
+   int pi=-1;for(int i=0;i<palette.Elements.Count;i++){var r=F<TagFieldReference>(palette.Elements[i].Fields,"name").Path;if(r!=null && r.RelativePath.Equals(o.tag,StringComparison.OrdinalIgnoreCase))pi=i;}
+   if(pi<0){pi=palette.Elements.Count;F<TagFieldReference>(palette.AddElement().Fields,"name").Path=TagPath.FromPathAndType(Safe(o.tag),"bloc*");}
+   int ci=-1;for(int i=0;i<crates.Elements.Count;i++)if(crateName(i)==name)ci=i;
+   TagField[] f;
+   if(ci>=0)f=crates.Elements[ci].Fields;
+   else {
+    ci=crates.Elements.Count;f=crates.AddElement().Fields;
+    int ni=-1;for(int i=0;i<names.Elements.Count;i++)if(F<TagFieldElementStringNormal>(names.Elements[i].Fields,"name").Data==name)ni=i;
+    if(ni<0){ni=names.Elements.Count;F<TagFieldElementStringNormal>(names.AddElement().Fields,"name").Data=name;}
+    var nf=names.Elements[ni].Fields;F<TagFieldBlockIndex>(nf,"object_type").Value=10;F<TagFieldBlockIndex>(f,"name").Value=ni;
+    var oid=S(S(f,"object data"),"object id");F<TagFieldElementInteger>(oid,"unique id").Data=0x48420000+k;F<TagFieldEnum>(oid,"type").Value=10;F<TagFieldEnum>(oid,"source").Value=1;F<TagFieldBlockIndex>(oid,"origin bsp index").Value=-1;
+   }
+   F<TagFieldBlockIndex>(f,"type").Value=pi;
+   var data=S(f,"object data");F<TagFieldElementArraySingle>(data,"position").Data=o.position;F<TagFieldElementArraySingle>(data,"rotation").Data=new[]{o.yaw,0f,0f};F<TagFieldElementSingle>(data,"scale").Data=1f;
+   var mp=S(f,"multiplayer data");
+   var team=Opt(mp,"owner team") as TagFieldEnum;if(team!=null)team.Value=o.team;
+   var channel=Opt(mp,"teleporter channel") as TagFieldEnum;if(channel!=null)channel.Value=Math.Max(0,Math.Min(o.channel,9));
+   var shape=Opt(mp,"boundary shape") as TagFieldEnum;if(shape!=null)shape.Value=o.shape;
+   if(o.shape>0) {
+    foreach(var pair in new[]{Tuple.Create("boundary width or radius",o.radius),Tuple.Create("boundary box length",o.radius*2),Tuple.Create("boundary positive height",o.height),Tuple.Create("boundary negative height",1f)}){var v=Opt(mp,pair.Item1) as TagFieldElementSingle;if(v!=null)v.Data=pair.Item2;}
+   }
+  }
+  for(int i=0;i<crates.Elements.Count;i++){int ni=F<TagFieldBlockIndex>(crates.Elements[i].Fields,"name").Value;if(ni>=0 && ni<names.Elements.Count)F<TagFieldBlockIndex>(names.Elements[ni].Fields,"scenario_datum_index").Value=i;}
+  return valid.Length;
+ }
+ static void LightmapPolicy(Job j) {
+  string level=Path.GetDirectoryName(Safe(j.scenario));string bsp=Safe(j.scenario);
+  int changed=0,total=0,reports=0;
+  using(var tag=new TagFile(TagPath.FromPathAndType(bsp,"sbsp"))) {
+   foreach(var element in F<TagFieldBlock>(tag.Fields,"instanced geometry instances").Elements) {
+    total++;
+    var policy=F<TagFieldEnum>(element.Fields,"lightmapping policy");
+    if(F<TagFieldElementSingle>(element.Fields,"world bounding sphere radius").Data>=j.radius && policy.Value==1){policy.Value=3;changed++;}
+   }
+   // Tool's warning reports (red "overlapping surfaces" markers in Sapien). The game does not use
+   // them; HaloBridge's preparation report lists the same warnings. Kept when asked for.
+   if(j.template!="keep_markers") {
+    var errors=F<TagFieldBlock>(tag.Fields,"errors");reports=errors.Elements.Count;
+    while(errors.Elements.Count>0)errors.RemoveElement(errors.Elements.Count-1);
+   }
+   if(changed>0||reports>0)tag.Save();
+  }
+  File.WriteAllText(j.output,js.Serialize(new{version=1,ok=true,instances=total,per_pixel=changed,cleared_reports=reports}));
+ }
+ // The level's lightmap geometry after Tool's faux_data_sync / faux_farm_finish: every mesh's raw
+ // vertices (position, normal, texcoord, lightmap texcoord) and triangle indices, as CSV for the
+ // Halo 2 lightmap transfer. Only per-pixel meshes have lightmap texcoords.
+ static void LightmapMesh(Job j) {
+  string level=Safe(j.scenario);
+  int meshCount=0;
+  using(var tag=new TagFile(TagPath.FromPathAndType(level,"Lbsp")))
+  using(var w=new StreamWriter(j.sources[0])) {
+   w.WriteLine("path,mesh,vertex,px,py,pz,nx,ny,nz,u,v,lu,lv");
+   var inv=System.Globalization.CultureInfo.InvariantCulture;
+   var geometry=S(tag.Fields,"imported geometry");
+   var meshes=F<TagFieldBlock>(geometry,"per mesh temporary");
+   for(int m=0;m<meshes.Elements.Count;m++) {
+    var fields=meshes.Elements[m].Fields;
+    var raw=F<TagFieldBlock>(fields,"raw vertices");
+    for(int i=0;i<raw.Elements.Count;i++) {
+     var v=raw.Elements[i].Fields;
+     Func<string,float[]> A=n=>F<TagFieldElementArraySingle>(v,n).Data;
+     var values=A("position").Concat(A("normal")).Concat(A("texcoord").Take(2)).Concat(A("lightmap texcoord").Take(2));
+     w.WriteLine("imported geometry/,"+m+","+i+","+string.Join(",",values.Select(x=>x.ToString("R",inv))));
+    }
+    var idx=F<TagFieldBlock>(fields,"raw indices");
+    w.WriteLine("#indices,imported geometry/,"+m+","+string.Join(" ",idx.Elements.Select(e=>((TagFieldElementInteger)e.Fields.First(x=>x is TagFieldElementInteger)).Data)));
+   }
+   meshCount=meshes.Elements.Count;
+  }
+  File.WriteAllText(j.output,js.Serialize(new{version=1,ok=true,meshes=meshCount}));
+ }
+ // Instances lit per vertex: each instance's definition mesh (an index into the lightmap BSP's
+ // imported geometry, whose raw vertices are in the definition's own space), its placement and
+ // its block of per-vertex light ("bsp per-vertex data": one lightprobe entry per raw vertex).
+ static void PervertexRead(Job j) {
+  string level=Safe(j.scenario);
+  var items=new List<object>();
+  using(var bsp=new TagFile(TagPath.FromPathAndType(level,"sbsp")))
+  using(var lbsp=new TagFile(TagPath.FromPathAndType(level,"Lbsp"))) {
+   var resource=S(bsp.Fields,"resource interface");
+   var rawItems=S(F<TagFieldBlock>(resource,"raw_resources").Elements[0].Fields,"raw_items");
+   var definitions=F<TagFieldBlock>(rawItems,"instanced geometries definitions");
+   var instances=F<TagFieldBlock>(bsp.Fields,"instanced geometry instances");
+   var lights=F<TagFieldBlock>(lbsp.Fields,"instances");
+   var blocks=F<TagFieldBlock>(lbsp.Fields,"bsp per-vertex data");
+   // Definition meshes store positions compressed to 0..1 inside these bounds
+   // (bounds 0 = x min, x max, y min; bounds 1 = y max, z min, z max).
+   var compression=F<TagFieldBlock>(S(bsp.Fields,"render geometry"),"compression info");
+   for(int i=0;i<instances.Elements.Count && i<lights.Elements.Count;i++) {
+    var f=instances.Elements[i].Fields;
+    int block=(int)F<TagFieldElementInteger>(lights.Elements[i].Fields,"pervertex block index").Data;
+    int definition=F<TagFieldBlockIndex>(f,"instance definition").Value;
+    if(block<0||block>=blocks.Elements.Count||definition<0||definition>=definitions.Elements.Count)continue;
+    int mesh=(int)F<TagFieldElementInteger>(definitions.Elements[definition].Fields,"mesh index").Data;
+    int count=F<TagFieldBlock>(blocks.Elements[block].Fields,"lightprobe data").Elements.Count;
+    int ci=(int)F<TagFieldElementInteger>(definitions.Elements[definition].Fields,"compression index").Data;
+    float[] bounds=null;
+    if(ci>=0 && ci<compression.Elements.Count){var c=compression.Elements[ci].Fields;bounds=F<TagFieldElementArraySingle>(c,"position bounds 0").Data.Concat(F<TagFieldElementArraySingle>(c,"position bounds 1").Data).ToArray();}
+    items.Add(new{instance=i,mesh=mesh,block=block,count=count,bounds=bounds,scale=F<TagFieldElementSingle>(f,"scale").Data,
+     forward=F<TagFieldElementArraySingle>(f,"forward").Data,left=F<TagFieldElementArraySingle>(f,"left").Data,
+     up=F<TagFieldElementArraySingle>(f,"up").Data,position=F<TagFieldElementArraySingle>(f,"position").Data});
+   }
+  }
+  File.WriteAllText(j.output,js.Serialize(new{version=1,ok=true,instances=items}));
+ }
+ // Per-vertex light from j.sources[1] (little-endian float32): for each block listed in j.sources[0]
+ // (JSON [[block,count],...], in order), count x 15 values per vertex: dominant light intensity
+ // r,g,b, then the red, green and blue linear SH terms (4 each). A vertex whose first value is NaN
+ // keeps Tool's light. Stored as half floats, as Tool writes them.
+ static void PervertexWrite(Job j) {
+  string level=Safe(j.scenario);
+  var order=js.Deserialize<int[][]>(File.ReadAllText(j.sources[0]));
+  var data=File.ReadAllBytes(j.sources[1]);int at=0,written=0;
+  Func<float> next=()=>{float v=BitConverter.ToSingle(data,at);at+=4;return v;};
+  using(var lbsp=new TagFile(TagPath.FromPathAndType(level,"Lbsp"))) {
+   var blocks=F<TagFieldBlock>(lbsp.Fields,"bsp per-vertex data");
+   string[] colors={"red lightprobe terms","green lightprobe terms","blue lightprobe terms"};
+   foreach(var entry in order) {
+    var probes=F<TagFieldBlock>(blocks.Elements[entry[0]].Fields,"lightprobe data");
+    if(probes.Elements.Count!=entry[1])throw new Exception("Per-vertex block "+entry[0]+" has "+probes.Elements.Count+" vertices, not "+entry[1]);
+    for(int v=0;v<entry[1];v++) {
+     var values=new float[15];for(int k=0;k<15;k++)values[k]=next();
+     if(float.IsNaN(values[0]))continue;
+     var p=probes.Elements[v].Fields;
+     F<TagFieldElementInteger>(p,"dominant light intensity r").Data=Half(values[0]);
+     F<TagFieldElementInteger>(p,"dominant light intensity g").Data=Half(values[1]);
+     F<TagFieldElementInteger>(p,"dominant light intensity b").Data=Half(values[2]);
+     for(int c=0;c<3;c++){var terms=F<TagFieldArray>(p,colors[c]);for(int t=0;t<4;t++)F<TagFieldElementInteger>(terms.Elements[t].Fields,"coefficient").Data=Half(values[3+c*4+t]);}
+     written++;
+    }
+   }
+   if(at!=data.Length)throw new Exception("Per-vertex light data has "+data.Length+" bytes; the blocks use "+at);
+   lbsp.Save();
+  }
+  File.WriteAllText(j.output,js.Serialize(new{version=1,ok=true,vertices=written}));
+ }
+ // A float as IEEE half-float bits in a signed 16-bit value (how the tag stores it).
+ static short Half(float value) {
+  uint b=BitConverter.ToUInt32(BitConverter.GetBytes(value),0);
+  uint sign=(b>>16)&0x8000;int exp=(int)((b>>23)&0xff)-127+15;uint mant=b&0x7fffff;
+  uint h;
+  if(exp<=0){h=exp<-10?0:((mant|0x800000)>>(13-exp));h=(h+1)>>1;}  // subnormal, rounded
+  else if(exp>=31)h=0x7bff;  // clamp to the largest finite half
+  else{h=(uint)(exp<<10)|(mant>>13);if((mant&0x1000)!=0)h++;}
+  return unchecked((short)(sign|h));
+ }
+ // Replace the level's lightmap master (the 16f lp_array bitmap Tool's faux_farm_finish writes:
+ // 9 layers of half-float SH coefficients) with j.sources[0]'s bytes, which must be the same size.
+ static void LightmapWrite(Job j) {
+  string scenario=Safe(j.scenario);string name=Path.GetFileName(scenario);
+  string target=Path.GetDirectoryName(scenario)+"\\"+name+"_lightmap_"+name+"_16f_lp_array";
+  if(j.template=="read") {
+   // Read the master instead: its bytes go to j.sources[0].
+   using(var tag=new TagFile(TagPath.FromPathAndType(target,"bitm"))) {
+    var bytesOut=tag.Fields.OfType<TagFieldData>().Single(x=>x.FieldName=="processed pixel data").GetData();
+    File.WriteAllBytes(j.sources[0],bytesOut);
+    File.WriteAllText(j.output,js.Serialize(new{version=1,ok=true,bitmap=target,bytes=bytesOut.Length}));
+   }
+   return;
+  }
+  var bytes=File.ReadAllBytes(j.sources[0]);
+  using(var tag=new TagFile(TagPath.FromPathAndType(target,"bitm"))) {
+   var data=tag.Fields.OfType<TagFieldData>().Single(x=>x.FieldName=="processed pixel data");
+   int size=data.GetData().Length;
+   if(bytes.Length!=size)throw new Exception("The lightmap master is "+size+" bytes; the Halo 2 lightmap transfer wrote "+bytes.Length+". Tool's lighting steps must stop after faux_farm_finish.");
+   data.SetData(bytes);tag.Save();
+  }
+  File.WriteAllText(j.output,js.Serialize(new{version=1,ok=true,bitmap=target,bytes=bytes.Length}));
  }
  static void ListSkies(Job j) {
   var items=new List<object>();var warnings=new List<string>();string root=Path.Combine(kit,"tags");
@@ -575,6 +957,13 @@ class TagOps {
   var fields=blocks.Length>0?blocks.SelectMany(b=>b.Elements.Cast<TagElement>()).SelectMany(e=>e.Fields).ToArray():tag.Fields;
   return AllReferences(fields).Where(r=>r.Path!=null && r.Path.Extension.StartsWith("shader",StringComparison.OrdinalIgnoreCase)).Select(r=>r.Path.RelativePath).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
  }
+ static string[] MaterialOrder(TagFile tag) {
+  // The tag's "materials" block in order: Tool fills it from the source materials,
+  // so position k is the shader the k-th source material was imported with.
+  var block=Block(tag.Fields,"materials");
+  if(block==null)return new string[0];
+  return block.Elements.Cast<TagElement>().Select(e=>AllReferences(e.Fields).Where(r=>r.Path!=null && r.Path.Extension.StartsWith("shader",StringComparison.OrdinalIgnoreCase)).Select(r=>r.Path.RelativePath).FirstOrDefault()??"").ToArray();
+ }
  static List<object> SourceFiles(TagFile tag,string folder,string prefix) {
   var items=new List<object>();
   var stream=TagAlternateStreamType.TagImportInformation;
@@ -614,8 +1003,11 @@ class TagOps {
     result["render_model"]=render.Path.RelativePath;
     if(!File.Exists(render.Path.Filename)){warnings.Add("Missing render model tag: "+render.Path.RelativePathWithExtension);return result;}
     using(var mode=new TagFile(render.Path)) {
-     result["sources"]=SourceFiles(mode,folder,prefix);
+     // A render model whose stored source can't be read falls back to the map mesh.
+     try {result["sources"]=SourceFiles(mode,folder,prefix);}
+     catch(Exception e){warnings.Add("Render model "+render.Path.RelativePath+": its stored source files could not be read ("+e.Message+"); the map mesh is used.");}
      result["shaders"]=ShaderPaths(mode);
+     result["material_order"]=MaterialOrder(mode);
      result["regions"]=NameTree(Block(mode.Fields,"regions"),0);
     }
    }
@@ -638,7 +1030,7 @@ class TagOps {
     if(!File.Exists(reference.Path.Filename)){warnings.Add("Missing BSP tag: "+reference.Path.RelativePathWithExtension);row["missing"]=true;bsps.Add(row);continue;}
     try {
      Console.WriteLine("Reading "+reference.Path.RelativePathWithExtension);
-     using(var bsp=new TagFile(reference.Path)) {row["sources"]=SourceFiles(bsp,folder,"bsp_"+i);row["shaders"]=ShaderPaths(bsp);}
+     using(var bsp=new TagFile(reference.Path)) {row["sources"]=SourceFiles(bsp,folder,"bsp_"+i);row["shaders"]=ShaderPaths(bsp);row["material_order"]=MaterialOrder(bsp);}
     } catch(Exception e){warnings.Add("BSP "+reference.Path.RelativePath+": "+e.Message);}
     bsps.Add(row);
    }

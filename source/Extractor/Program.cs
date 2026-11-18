@@ -16,14 +16,35 @@ class Program {
    var job=JsonDocument.Parse(File.ReadAllText(args[0])).RootElement;
    if(job.GetProperty("version").GetInt32()!=1) throw new Exception("Unsupported job version");
    var map=job.GetProperty("map").GetString()!; var output=job.GetProperty("output").GetString()!;
+   if(job.GetProperty("operation").GetString()=="h2a_campaign_scene") {
+    // Halo 2: Anniversary campaign (Saber3D): a level .pck, not a Blam .map (source/H2ACampaign).
+    var shared=job.TryGetProperty("shared",out var s)?s.GetString()!:Path.Combine(Path.GetDirectoryName(Path.GetFullPath(map))!,"shared.pck");
+    var maxTexture=job.TryGetProperty("max_texture",out var t)?t.GetInt32():2048;
+    var textures=job.TryGetProperty("textures",out var x)?x.GetString():null;  // a texture folder shared between levels
+    HaloBridge.H2ACampaign.MapSceneWriter.Export(map,shared,output,maxTexture,textures);
+    Console.WriteLine(JsonSerializer.Serialize(new{version=1,ok=true,output}));return 0;
+   }
+   if(job.GetProperty("operation").GetString()=="h2a_campaign_index") {
+    // Every placeable Anniversary campaign template and material in shared.pck (map = shared.pck).
+    HaloBridge.H2ACampaign.MapSceneWriter.Index(map,output);
+    Console.WriteLine(JsonSerializer.Serialize(new{version=1,ok=true,output}));return 0;
+   }
+   if(job.GetProperty("operation").GetString()=="h2a_campaign_extract") {
+    var maxTexture=job.TryGetProperty("max_texture",out var t)?t.GetInt32():2048;
+    var textures=job.TryGetProperty("textures",out var x)?x.GetString():null;
+    HaloBridge.H2ACampaign.MapSceneWriter.ExportAsset(map,job.GetProperty("tag").GetString()!,output,maxTexture,textures);
+    Console.WriteLine(JsonSerializer.Serialize(new{version=1,ok=true,output}));return 0;
+   }
    var cache=CacheFactory.ReadCacheFile(map);
    bool reach=cache.Metadata.Engine==BlamEngine.HaloReach;
    // ODST uses the Halo 3 tag layouts; Reclaimer reads both with the same classes.
    bool odst=cache.Metadata.Engine==BlamEngine.Halo3ODST;
    bool classic=ClassicSupport.IsClassic(cache);
    if(classic)ClassicSupport.Current=cache;
-   if(!classic && ((cache.Metadata.Engine!=BlamEngine.Halo3 && !odst && !reach) || !cache.Metadata.IsMcc)) throw new Exception("Select an MCC PC Halo: CE, Halo 2, Halo 3, Halo 3: ODST or Halo: Reach map.");
-   var game=classic?ClassicSupport.Game(cache):reach?"reach":odst?"odst":"halo3";
+   bool h2a=H2ASupport.Is(cache);
+   if(h2a)H2ASupport.Current=cache;
+   if(!classic && ((cache.Metadata.Engine!=BlamEngine.Halo3 && !odst && !reach && !h2a) || !cache.Metadata.IsMcc)) throw new Exception("Select an MCC PC Halo: CE, Halo 2, Halo 2: Anniversary, Halo 3, Halo 3: ODST or Halo: Reach map.");
+   var game=classic?ClassicSupport.Game(cache):h2a?H2ASupport.Game:reach?"reach":odst?"odst":"halo3";
    if(job.TryGetProperty("game",out var requested) && requested.GetString()!=game) throw new Exception("The map belongs to a different game ("+game+"). Change the Halo game selector or maps folder.");
    var op=job.GetProperty("operation").GetString();
    if(op=="probe") {
@@ -34,6 +55,16 @@ class Program {
     if(new[]{"extract","material","map_scene"}.Contains(op))Save(Path.Combine(output,"texture_names.json"),new{version=1,textures=cache.TagIndex.Where(t=>t.ClassCode=="bitm").ToDictionary(t=>t.Id.ToString(),t=>t.TagName)});
     if(op=="index"){ClassicSupport.Index(cache,map,output);Console.WriteLine(JsonSerializer.Serialize(new{version=1,ok=true,output}));return 0;}
     if(op=="material"){ClassicSupport.Material(cache,job.GetProperty("tag").GetString()!,output);Console.WriteLine(JsonSerializer.Serialize(new{version=1,ok=true,output}));return 0;}
+    if(op=="sky_lighting"){var notes=new List<string>();var lighting=game=="halo2"?ClassicSupport.SkyLighting(cache,notes,job.GetProperty("tag").GetString()!):null;Save(output,new{version=1,sky_lighting=lighting,warnings=notes});Console.WriteLine(JsonSerializer.Serialize(new{version=1,ok=true,output}));return 0;}
+    if(op=="map_scene"){ReachMapScene.ExportScene(cache,game,output);Console.WriteLine(JsonSerializer.Serialize(new{version=1,ok=true,output}));return 0;}
+    if(op=="h1_lightmaps" && game=="halo1"){ClassicSupport.H1Lightmaps(cache,output);Console.WriteLine(JsonSerializer.Serialize(new{version=1,ok=true,output}));return 0;}
+    if(op=="h1_gameplay" && game=="halo1"){Save(output,ClassicSupport.H1GameplayData(cache));Console.WriteLine(JsonSerializer.Serialize(new{version=1,ok=true,output}));return 0;}
+    if(op!="extract"&&op!="texture_names"&&op!="scenario_info")throw new Exception(op+" is not available for "+game+" maps.");
+   }
+   if(h2a) {
+    if(new[]{"extract","material","map_scene"}.Contains(op))Save(Path.Combine(output,"texture_names.json"),new{version=1,textures=cache.TagIndex.Where(t=>t.ClassCode=="bitm").ToDictionary(t=>t.Id.ToString(),t=>t.TagName)});
+    if(op=="index"){H2ASupport.Index(cache,map,output);Console.WriteLine(JsonSerializer.Serialize(new{version=1,ok=true,output}));return 0;}
+    if(op=="material"){H2ASupport.Material(cache,job.GetProperty("tag").GetString()!,output);Console.WriteLine(JsonSerializer.Serialize(new{version=1,ok=true,output}));return 0;}
     if(op=="map_scene"){ReachMapScene.ExportScene(cache,game,output);Console.WriteLine(JsonSerializer.Serialize(new{version=1,ok=true,output}));return 0;}
     if(op!="extract"&&op!="texture_names"&&op!="scenario_info")throw new Exception(op+" is not available for "+game+" maps.");
    }
@@ -136,6 +167,7 @@ class Program {
     Directory.CreateDirectory(output);var mats=new List<object>();
     foreach(var m in materials) {
      ClassicSupport.FillMissingDiffuse(m);
+     H2ASupport.Adjust(m);
      var textures=new List<object>();
      foreach(var tm in m.TextureMappings.Where(t=>t.Texture!=null && new[]{"diffuse","normal","transparency","blend","color_change","diffuse_detail"}.Contains(t.Usage))) {
       var tex=tm.Texture;var texName="texture_"+tex.Id+".png";var full=Path.Combine(output,texName);

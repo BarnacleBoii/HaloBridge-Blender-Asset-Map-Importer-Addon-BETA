@@ -17,6 +17,7 @@ BUILD = {
     'halo1': dict(args=lambda scenario: ['build-cache-file', scenario, 'remastered'], output='maps'),
     'halo2': dict(args=lambda scenario: ['-batch', 'build-cache-file', scenario, 'win64'], output='h2_maps_win64_dx11'),
 }
+KIT_LABELS = {'halo1': 'Halo: CE (HCEEK)', 'halo2': 'Halo 2 (H2EK)'}
 SCENARIO_FOLDERS = ('levels', 'scenarios')
 
 
@@ -52,7 +53,7 @@ def build_map(config, scenario, cancel=None, progress=None):
         raise RuntimeError('Building a map from a .scenario is only used for Halo: CE and Halo 2.')
     kit = Path(config['kit'])
     if not (kit / 'tool.exe').is_file():
-        raise RuntimeError('Choose the ' + {'halo1': 'Halo: CE (HCEEK)', 'halo2': 'Halo 2 (H2EK)'}[game] + ' Editing Kit folder; it contains tool.exe.')
+        raise RuntimeError('Choose the ' + KIT_LABELS[game] + ' Editing Kit folder; it contains tool.exe.')
     sig = signature(kit, scenario, game)
     name = scenario.rsplit('\\', 1)[-1] + '.map'
     folder = Path(config['cache']) / 'kit_maps' / game / stable_id(str(kit.resolve()).lower(), scenario.lower())
@@ -67,7 +68,7 @@ def build_map(config, scenario, cancel=None, progress=None):
         target.rename(backup)
     try:
         if progress:
-            progress('Building ' + name + ' with the ' + ('Halo: CE' if game == 'halo1' else 'Halo 2') + ' Editing Kit Tool (Halo 2 can take a few minutes)...')
+            progress('Building ' + name + ' with the ' + KIT_LABELS[game].split(' (')[0] + ' Editing Kit Tool (Halo 2 maps can take several minutes)...')
         log = Path(config['cache']) / 'jobs' / ('build_cache_' + str(time.time_ns()) + '.log')
         run_process([kit / 'tool.exe', *BUILD[game]['args'](scenario)], log, cwd=kit, cancel=cancel)
         if not target.is_file():

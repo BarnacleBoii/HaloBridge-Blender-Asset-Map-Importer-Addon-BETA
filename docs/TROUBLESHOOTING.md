@@ -2,14 +2,14 @@
 
 [Home](../README.md) · [Installation](INSTALLATION.md) · [Sidebar reference](FEATURES.md) · [Known limits](LIMITATIONS.md)
 
-**First step for any problem:** look at **HaloBridge Warnings and Messages** near the bottom of the sidebar and click **Open diagnostic report**. It names the objects, files and reasons involved. For setup problems, run **Check setup**.
+**First step for any problem:** look at **HaloBridge Warnings and Messages** near the bottom of the sidebar and click **Open diagnostic report**. It names the objects, files and reasons involved. For setup problems, run **Check setup**. To look up a specific message, see the [error reference](ERRORS.md), which explains every message HaloBridge can show.
 
 ## Contents
 
 - **Setup:** [HaloBridge tab missing](#the-halobridge-tab-doesnt-appear) · [Detect folders found nothing](#detect-folders-didnt-find-my-folders) · [Check setup complaints](#check-setup-reports-problems) · [Helper or runtime errors](#a-helper-wont-start)
-- **Importing:** [Empty asset list](#the-asset-list-is-empty) · [Map picker empty](#the-map-picker-is-empty-or-a-map-isnt-found) · [Slow imports](#importing-or-previewing-is-slow) · [Missing textures](#textures-are-missing-white-or-flat) · [Missing BSPs](#missing-bsps-or-objects-after-a-whole-level-import) · [.scenario import problems](#scenario-import-problems)
-- **Editing:** [Copies move together](#moving-one-object-moves-others) · [Swap changes size](#swapped-assets-have-a-different-size) · [Flickering / grey view](#flickering-surfaces-or-a-grey-cut-off-view)
-- **Preparing:** [Level name rejected](#output-level-name-is-rejected) · [Prepare fails](#prepare-fails) · [Test lighting assertion](#test-lighting-fails-faux_materialcpp-parameter_success) · [Seems stuck](#preparation-seems-stuck) · [Geometry limits](#cluster--too-many-vertices-triangles-or-strip-segments) · [Collision errors](#collision-errors-and-red-debug-geometry) · [Ownership conflict](#old-output-or-ownership-conflict)
+- **Importing:** [Empty asset list](#the-asset-list-is-empty) · [Map picker empty](#the-map-picker-is-empty-or-a-map-isnt-found) · [Slow imports](#importing-or-previewing-is-slow) · [Missing textures](#textures-are-missing-white-or-flat) · [Missing BSPs](#missing-bsps-or-objects-after-a-whole-level-import) · [.scenario import problems](#scenario-import-problems) · [Anniversary campaign](#halo-2-anniversary-campaign) · [Blender crashes](#blender-closes-or-crashes)
+- **Editing:** [Slow viewport / Shadow buffer full](#slow-viewport-or-shadow-buffer-full) · [Copies move together](#moving-one-object-moves-others) · [Swap changes size](#swapped-assets-have-a-different-size) · [Flickering / grey view](#flickering-surfaces-or-a-grey-cut-off-view)
+- **Preparing:** [Level name rejected](#output-level-name-is-rejected) · [Prepare fails](#prepare-fails) · [Test lighting assertion](#test-lighting-fails-faux_materialcpp-parameter_success) · [Seems stuck](#preparation-seems-stuck) · [Instance / file-size limits](#instanced-geometry-definitions-or-the-level-file-is-too-large) · [Geometry limits](#cluster--too-many-vertices-triangles-or-strip-segments) · [Collision errors](#collision-errors-and-red-debug-geometry) · [Ownership conflict](#old-output-or-ownership-conflict)
 - **Sky:** [Wrong or white sky](#wrong-white-or-dark-sky)
 - **In Sapien:** [Player start underground](#the-camera-or-player-start-is-underground)
 - [Reporting a bug](#reporting-a-bug)
@@ -40,7 +40,7 @@ Check setup checks the **whole** workflow, including Sapien preparation, so some
 | Halo Asset Blender Development Toolset | Install and enable it (v432 or newer; v364 also works on Blender 4.0). |
 | "cannot export on Blender ... (Python 3.13)" | Your toolset is too old for Blender 5.x. Install the current release. |
 | Editing Kit folder / `tool.exe` / `ManagedBlam.dll` | The kit path is wrong or points at a subfolder. Use the folder containing `tool.exe`. |
-| tag archives / `deadlock.scenario` | The kit's tags aren't extracted. See [Installation](INSTALLATION.md#1-install-the-games-and-mod-tools). |
+| tag archives / `isolation.scenario` (older versions: `deadlock.scenario`) | The kit's tags aren't extracted. See [Installation](INSTALLATION.md#1-install-the-games-and-mod-tools). |
 | MCC maps folder | The maps path is wrong or empty. |
 | .NET 10 Desktop Runtime | Install the **Desktop** runtime, **x64**, then restart Blender. |
 | .NET Framework 4.8 | Install .NET Framework 4.8. |
@@ -69,6 +69,9 @@ The first use of an asset or level extracts geometry and converts textures, and 
 - Switch the viewport to **Material Preview**.
 - For `.scenario` imports, set the game's **.map Files** folder too: textures come from the matching map. A shader that isn't in that map has no preview texture.
 - Halo: CE / Halo 2 assets imported with an older version: select the material and click **Load Halo Shader Textures/Masks for Currently selected Material**, or re-import.
+- **White surface with a Halo shader name on a `.scenario` import:** before v0.10.1 (Nov 12 update), a material whose name exists in two shader folders was left without a shader. Update and import the level again; it now uses the level's own shader, as Tool does. A material named after a shader that isn't in the level at all is listed in the import report as "has no unique shader reference"; assign one under **Shaders**.
+- **Surfaces darker and less saturated than the `.map` import:** older versions blended detail textures too dark. Update; scenes saved with older versions are brightened when you open them. Surfaces with a detail texture may now look slightly brighter than in a `.map` import, which showed only the base texture.
+- Solid-colour Halo shaders (glows, sky effects, invisible surfaces) have no texture and show as a flat colour; that's expected.
 - Halo's layered shaders, reflections and lighting are approximated in Blender, so some surfaces will look different from the game.
 
 ### Missing BSPs or objects after a whole-level import
@@ -81,6 +84,23 @@ Read the import report. Make sure the maps folder is complete (shared resource m
 - **Halo: CE / Halo 2 build fails** — the kit's Tool couldn't build the scenario. The report includes Tool's output. Make sure the kit folder is right and its tags are intact.
 - **Reach geometry missing** — set the Reach **.map Files** folder; Reach geometry comes from the map.
 
+### Halo 2: Anniversary campaign
+
+- **The campaign box is missing:** set **Import game** to **Halo 2: Anniversary**.
+- **"No campaign levels found" / "campaign files not found":** set **Halo 2: Anniversary .map Files** to MCC's `groundhog\maps`, and check that the Anniversary campaign content is installed (`halo2\preload\paks` must contain `shared.pck`).
+- **`00a_introduction` stops with "The map has no decoded visual placements.":** it's a cutscene level with no geometry.
+- **Characters' parts out of place, overlapping variants, slow first index, storage:** see [Halo 2: Anniversary campaign → Troubleshooting](H2A-CAMPAIGN.md#troubleshooting).
+
+### Textures went pink after moving or reopening a .blend
+
+Imported materials load their images from HaloBridge's storage folder. If the `.blend` moved to another PC, the storage folder changed, or a cache folder was deleted, the images can't be found. Import the level or asset again, or before moving a project use **File → External Data → Pack Resources** and save.
+
+### Blender closes or crashes
+
+- **During a level import:** whole levels are big. Close other programs, and for the Anniversary campaign use a smaller **Reduce Texture Size**. Blender writes a crash log to your Windows temp folder (`blender.crash.txt`); include it when reporting.
+- **While placing a model** (`EXCEPTION_ACCESS_VIOLATION` in `mesh_set_custom_normals`): fixed for Anniversary models in this version (zero-area triangles are dropped). Update HaloBridge. If another model does this, report it with its name.
+- **Don't start Blender with `--factory-startup`** if you use other extensions such as Foundry: Blender then treats their bundled Python packages as unused and can delete them. Start Blender normally; extensions reinstall missing packages on a normal start.
+
 ## Editing
 
 ### Moving one object moves others
@@ -92,6 +112,14 @@ Linked copies (**Alt+D**, swaps, instanced BSP geometry) share one mesh: moving 
 ### Swapped assets have a different size
 
 This is by design: a swap keeps each object's position and rotation, but the asset keeps its original size. Scale the results afterwards. Placing from a preview keeps the preview's scale instead.
+
+### Slow viewport or "Shadow buffer full"
+
+The message "Error: Shadow buffer full, may result in missing shadows and lower performance (3969 / 2048)" in the top-left of the 3D View means EEVEE (Blender 4.2+) needs more shadow memory than it has. A whole Halo level is far bigger than the scenes EEVEE's shadows are designed for, so the viewport slows down.
+
+- Click **Folders and Setup → Viewport Shadows** so it reads **Off (Faster)**. From v0.10.1 shadows start off in every scene, and level imports turn them off again. The error disappears, and the level looks almost the same because Halo lighting is baked.
+- Raising **Render Properties → Performance → Shadow Pool** makes it slower, not faster.
+- Still slow? Use **Solid** shading while moving around and switch to **Material Preview** to check textures, or hide collections you aren't working on (the eye icons in the Outliner).
 
 ### Flickering surfaces or a grey, cut-off view
 
@@ -122,16 +150,21 @@ The longest stage is usually geometry and collision. A compiler line like `creat
 
 **Cancel preparation** stops the build and restores the previous version.
 
+### "Instanced geometry definitions" or the level file is too large
+
+Whole imported levels, especially Halo 2: Anniversary, can exceed Halo 3's limits: at most **1,024 distinct instanced meshes per BSP**, and a level file of about **2 GB** (Tool crashes with `MAXIMUM_MEMSET_SIZE`). HaloBridge stops before Tool with an explanation. Delete or hide what you don't need (small scenery, crates, decorations), join pieces that never move into fewer objects, or turn on **Decimate very dense objects**. Prepare a section of a big level rather than all of it.
+
 ### Cluster / too many vertices, triangles or strip segments
 
-"Cluster" numbers come from Tool, not from Blender. The report's **Structure geometry context** and the activity log's **Main structure** line name the Blender object. Reduce the density of that mesh (on a copy first), or split a huge terrain into several objects. HaloBridge doesn't simplify geometry for you. Very large single models are automatically split into aligned pieces to stay within Halo's per-instance limit.
+"Cluster" numbers come from Tool, not from Blender. The report's **Structure geometry context** and the activity log's **Main structure** line name the Blender object. Reduce the density of that mesh (on a copy first), or split a huge terrain into several objects. **Decimate very dense objects** can do this for you, per object and reversibly. Very large single models are automatically split into aligned pieces to stay within Halo's per-instance limit, and oversized level structures get portals automatically; **Add portal grid** lets you add your own. The [error reference](ERRORS.md#halo-tool-compiler-errors) explains each Tool message.
 
 ### Collision errors and red debug geometry
 
 - **Ambiguous or degenerate edges** — HaloBridge automatically recompiles that object with a simple box, then without collision, and lists it in the report. Walk into it in Sapien to check.
 - **Red trees or "overlapping surfaces" labels in Sapien** — these are Tool's debug markers, not a visible asset. They point at overlapping or duplicate faces. The report lists them by object name.
-- **Leaves you can't walk through** — Automatic makes Halo foliage shaders walk-through. For other leaf materials, tick the Halo toolset's **Render Only** flag in Material Properties (not on trunks or ground you want to stand on).
-- **Plane builder unable to converge / open edges** — the mesh has holes, duplicate faces or self-intersections. Clean it up, or set its **Object collision** to **Simple box**.
+- **Leaves you can't walk through** — Automatic makes Halo foliage shaders (including Halo 2: Anniversary's foliage material shaders) walk-through. For other leaf materials, tick the Halo toolset's **Render Only** flag in Material Properties (not on trunks or ground you want to stand on).
+- **Plane builder unable to converge / open edges** — the mesh has holes, duplicate faces or self-intersections. Clean it up, or set its collision (**Selected Asset → Collision**) to **Simple box**.
+- **Players walk through something they shouldn't, or bump into leaves** — check the object's **Collision** choice: **No collision** and **No leaf collision** make things walk-through; **Automatic** treats Halo foliage shaders as walk-through.
 
 ### Test lighting fails: faux_material.cpp parameter_success
 
@@ -150,7 +183,9 @@ HaloBridge only overwrites a level it created itself (it keeps a record in its `
 - Choose the sky explicitly: **Sapien Sky → Game → Sky**. For the destination game, click **Scan for map skies** first.
 - A converted sky chosen with an older version looks white: choose it again.
 - A converted sky looks grey (Halo: CE clouds) or very bright (Halo: CE / Halo 2 layers): that's a known limit of the conversion.
-- A dark level with a converted sky: turn on **Generate Test Lighting**. HaloBridge lights the level with a kit sky first because converted skies carry no lighting.
+- A dark level with a converted sky: turn on **Generate Test Lighting**. HaloBridge lights the level with a kit sky first because converted skies carry no lighting. Halo 2 skies bring their own sun and sky light; raise **Sun** or **Shade** for brighter light.
+- Shaded areas very dark everywhere: Tool's draft lighting has no bounced light. Try **Lighting bake → H3LM** (needs a DirectX 12 graphics card and the separate H3LM download), or **Copy Halo 2's original lighting** for Halo 2 / Halo CE maps.
+- The default sky is **Isolation** (Halo 3) when you haven't chosen one and the imported level has no sky of its own. Earlier versions used Deadlock.
 - If you picked another game's sky but none is placed, preparation stops and says so.
 
 ## In Sapien

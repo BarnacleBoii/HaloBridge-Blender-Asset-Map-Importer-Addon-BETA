@@ -20,4 +20,14 @@ with tempfile.TemporaryDirectory() as tmp:
     assert bpy.data.objects.get('recovered') is not None
     assert edited.data.vertices[0].co.x==9 and edited.location.x==150
     assert edited['hb_map_manifest']==str(root/'new/scene.json')
-print('PASS repair adds newly recovered rows while retaining edits and deletions')
+    # "Import sky" off: the map's sky rows are left out, the rest of the level comes in.
+    for obj in list(bpy.context.scene.objects):bpy.data.objects.remove(obj,do_unlink=True)
+    sky=[dict(rows[0],name='sky layer',group='Skies')]
+    catalog.write_json(root/'sky/mesh.json',mesh)
+    catalog.write_json(root/'sky/scene.json',dict(kind='halo3_map_scene',matrix_convention='row_vector',scenario='fixture',meshes={'shared':'mesh.json'},placements=rows[:1]+sky,decoded_bsps=1,expected_bsps=1))
+    for _ in map_scene.import_scene(bpy.context,root/'sky/scene.json',skies=False):pass
+    names={o.name for o in bpy.context.scene.objects}
+    assert 'edited' in names and 'sky layer' not in names,names
+    for _ in map_scene.import_scene(bpy.context,root/'sky/scene.json'):pass
+    assert any(o.name.startswith('sky layer') for o in bpy.context.scene.objects)
+print('PASS repair adds newly recovered rows while retaining edits and deletions; Import sky off leaves out sky rows')

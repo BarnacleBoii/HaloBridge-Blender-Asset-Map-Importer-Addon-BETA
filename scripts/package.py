@@ -8,6 +8,8 @@ HELPERS={
     'extractor/HaloBridge.Extractor.exe','extractor/HaloBridge.Extractor.dll',
     'extractor/HaloBridge.Extractor.deps.json','extractor/HaloBridge.Extractor.runtimeconfig.json',
     'extractor/Reclaimer.Blam.dll','extractor/Reclaimer.Core.dll','tags/HaloBridge.Tags.exe',
+    # Halo 2: Anniversary campaign (Saber3D .pck) reader used by the extractor's h2a_campaign_scene job.
+    'extractor/HaloBridge.H2ACampaign.dll',
 }
 SKIP={'__pycache__','obj','bin','.git','dist'}
 FORBIDDEN={'.map','.blend','.blend1','.amf','.rmf','.jms','.ass','.dds','.tif','.png','.pdb','.pyc','.log'}

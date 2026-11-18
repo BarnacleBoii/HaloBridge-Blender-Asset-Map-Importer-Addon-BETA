@@ -69,6 +69,8 @@ def material(meta, directory):
         _material_count=len(bpy.data.materials)
     m=bpy.data.materials.get(_material_lookup.get(key,key))
     if m:
+        from . import regular_preview
+        regular_preview.refresh_gain(m)
         m['hb_material_key']=key
         if generated_material(m.name):
             m['hb_conversion_id']=m.get('hb_conversion_id',m.name)
@@ -80,6 +82,17 @@ def material(meta, directory):
     _material_lookup[key]=m.name;_material_count=len(bpy.data.materials)
     m['hb_texture_sources']=json.dumps(meta.get('textures',[]));m['hb_texture_directory']=str(directory)
     m['hb_shader']=meta.get('shader','');m['hb_label']=meta['name'];compat.enable_nodes(m)
+    m['hb_source_alpha']=str(meta.get('alpha') or 'opaque')  # opaque, clip, blend, additive ...
+    material_shader=(meta.get('options') or {}).get('material_shader')
+    if material_shader:m['hb_material_shader']=material_shader  # Halo 2: Anniversary engine shader
+    template=(meta.get('options') or {}).get('template')
+    if template:m['hb_h2_template']=template  # Halo 2 shader template: its detail maps are converted too
+    shader_class=(meta.get('options') or {}).get('class')
+    if shader_class:m['hb_h1_class']=shader_class  # Halo CE shader class (spla plasma, sgla glass, swat water ...)
+    transparent=(meta.get('options') or {}).get('transparent')
+    if transparent in ('alpha','additive'):m['hb_transparent']=transparent  # Halo 2 see-through layer (cloud sea ...)
+    from . import classic_sky
+    if classic_sky.apply(m,meta,directory):return m
     nodes=m.node_tree.nodes;links=m.node_tree.links;bsdf=nodes.get('Principled BSDF')
     texture_names=read_json(Path(directory)/'texture_names.json',{}).get('textures',{})
     for tm in meta['textures']:
@@ -282,12 +295,27 @@ def validate_map_export(scene):
     if references:
         raise RuntimeError('Cannot prepare the complete scene: '+str(len(references))+' whole-map reference objects are not export-ready. Their original terrain collision, object types and source identities must be linked before export. Preparation stopped before writing files, instead of silently exporting only the starter shell. This version does not yet support whole-map round-trip export.')
 
-def export_scene(config,path):
+def export_scene(config,path,scene=None):
+    steps=export_scene_steps(config,path,scene)
+    while True:
+        try:next(steps)
+        except StopIteration as done:return done.value
+
+
+def export_scene_steps(config,path,scene=None):
+    """export_scene(). Given an explicit scene (the background parts writer), it never
+    switches Blender's active scene and yields between objects, so Blender keeps
+    responding; otherwise the toolset exports here in one go, as before."""
     def shader_name(tag):
         alias=config.get("shader_aliases",{}).get(tag)
         return alias["name"] if alias else material_name(config["kit"],tag)
-    validate_map_export(bpy.context.scene)
-    ensure_exporter();bpy.context.view_layer.update();source=bpy.context.scene;objects=[o for o in source.objects if o.type=='MESH' and not o.get('hb_ignore')]
+    pause=scene is not None
+    source=scene or bpy.context.scene
+    validate_map_export(source)
+    ensure_exporter()
+    if pause:source.view_layers[0].update()
+    else:bpy.context.view_layer.update()
+    objects=[o for o in source.objects if o.type=='MESH' and not o.get('hb_ignore')]
     if not objects:
         if any(o.get('hb_map_reference') for o in source.objects):
             raise RuntimeError('The original-layout collection is a visual map reference, not export-ready level geometry. Original collision and gameplay are not reconstructed. Create authored level geometry before Prepare for Sapien.')
@@ -324,8 +352,9 @@ def export_scene(config,path):
         raise ValidationError(issues)
     temp=bpy.data.scenes.new('HaloBridge export');old=bpy.context.window.scene;mesh_cache={};mat_cache={}
     try:
-        bpy.context.window.scene=temp
-        for obj in objects:
+        if not pause:bpy.context.window.scene=temp
+        for index,obj in enumerate(objects):
+            if pause and index%10==0:yield
             if obj.get('hb_kind')=='scenery':continue
             key=obj.data.as_pointer()
             if key not in mesh_cache:
@@ -357,14 +386,27 @@ def export_scene(config,path):
         legacy_toolset_check()
         from .geometry_export import repair_texcoords
         repair_texcoords(temp.objects)  # Tool rejects the whole ASS for one NaN texture coordinate.
-        bpy.ops.export_scene.ass(filepath=str(path),game_title='halo3',scale_enum='1',hidden_geo=False,nonrender_geo=False,apply_modifiers=True,triangulate_faces=True,edge_split=False,clean_normalize_weights=False)
-        if not Path(path).is_file():raise RuntimeError('Exporter did not produce a level file.')
+        job=None
+        if config.get('ass_parts'):
+            # Written by the toolset in background Blender processes, one saved piece per mesh
+            # (ass_parts.py); unchanged meshes are reused from the last preparation.
+            from . import ass_parts
+            try:job=(yield from ass_parts.plan_steps(temp,path,config['ass_parts'])) if pause else ass_parts.plan(temp,path,config['ass_parts'])
+            except ValueError:job=None  # a scene the parts writer doesn't handle: export here instead
+        if job and config.get('defer_ass'):config['ass_job']=job
+        elif job:
+            from . import ass_parts
+            ass_parts.run(job,progress=config.get('progress'))
+        else:
+            bpy.context.window.scene=temp
+            bpy.ops.export_scene.ass(filepath=str(path),game_title='halo3',scale_enum='1',hidden_geo=False,nonrender_geo=False,apply_modifiers=True,triangulate_faces=True,edge_split=False,clean_normalize_weights=False)
+        if not job or not config.get('defer_ass'):
+            if not Path(path).is_file():raise RuntimeError('Exporter did not produce a level file.')
     finally:
-        bpy.context.window.scene=old
-        for o in list(temp.objects):bpy.data.objects.remove(o,do_unlink=True)
+        if bpy.context.window.scene!=old:bpy.context.window.scene=old
+        # One batch removal: removing thousands of datablocks one by one is slow.
+        bpy.data.batch_remove([*temp.objects,*mesh_cache.values(),*mat_cache.values()])
         bpy.data.scenes.remove(temp)
-        for mesh in mesh_cache.values():bpy.data.meshes.remove(mesh)
-        for mat in mat_cache.values():bpy.data.materials.remove(mat)
     return placements
 
 # Starter template sizes in 100x working units: an 81 m terrain inside a 131 m x 52 m sky wall.

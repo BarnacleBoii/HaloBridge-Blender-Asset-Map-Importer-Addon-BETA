@@ -35,7 +35,9 @@ class ProgressTests(unittest.TestCase):
             self.assertIn('Little CPU activity',messages[-1]);self.assertIn('68s',messages[-1])
             self.assertIn('Time remaining: unknown',messages[-1])
             saved=activity.path.read_text(encoding='utf-8')
-            self.assertEqual(saved.count('creating initial planes'),1)
+            # Tool's step names are translated into plain words, once per change.
+            self.assertEqual(saved.count('Optimizing collision planes'),1)
+            self.assertNotIn('creating initial planes',saved)
             self.assertIn('Starting',saved);self.assertIn('Stage 3/5',saved)
             self.assertEqual(activity.current_log,str(log))
             self.assertEqual(activity.stage_number,3)
@@ -49,6 +51,23 @@ class ProgressTests(unittest.TestCase):
             tool.bind_process(SimpleNamespace(poll=lambda:0),lambda p:None)
             tool()
             self.assertIn('last line without newline',activity.path.read_text())
+
+    def test_structure_lines_in_plain_words(self):
+        from halo_bridge.progress import describe
+        names={'hb_190':'dry grass #3'};state={}
+        self.assertEqual(describe('=== new definiton: 865looking for shaders',names,state),'They use 865 different meshes')
+        self.assertIn('865 meshes',describe('building bsp3d children...... 68% /',names,state))
+        self.assertNotIn('%',describe('building bsp3d children...... 68% /',names,state))
+        self.assertEqual(describe("-ERROR- (poop hb_190.001) section 'global' has too many vertices (count=35764, max=32767)",names),
+                         "Error on \"dry grass #3\": section 'global' has too many vertices (count=35764, max=32767)")
+        self.assertIn('overlapping surfaces (shows as red',describe('WARNING (poop hb_190.001) overlapping surfaces',names))
+        self.assertIsNone(describe("WARNING (poop hb_2.001) material '' is not renderable, but has flags that only make sense on render geometry",names))
+        self.assertIsNone(describe('...',names))
+        crash=[describe(line,names) for line in ('-FATAL- (poop hb_190.001) ','message (poop hb_190.001) crash: beginning stack walk',
+               '-FATAL- (poop hb_190.001) tool  test x64 untracked version  Jan  3 2024','-FATAL- (poop hb_190.001) ### ASSERTION FAILED:  at array.cpp,#264',
+               'WARNING (poop hb_190.001) lifecycle: CRASH')]
+        self.assertEqual(set(crash),{'Tool stopped (it crashed) while compiling "dry grass #3"; see the error above'})
+        self.assertIn('on "dry grass #3"',describe('WARNING (poop hb_190.001 merged) partially untextured geometry',names))
 
     def test_real_child_process_reporting(self):
         from halo_bridge.jobs import run_process

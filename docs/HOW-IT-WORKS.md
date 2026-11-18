@@ -12,6 +12,7 @@ HaloBridge is a Blender add-on (Python) plus two helper programs it runs in the 
 | --- | --- | --- |
 | `halo_bridge/` | Python, inside Blender | The sidebar, the asset list, Blender scene building, geometry export and the build steps |
 | **Extraction helper** (`bin/extractor`, source in `source/Extractor`) | C#, .NET 10 | Reads MCC `.map` files using the bundled [Reclaimer](https://github.com/Gravemind2401/Reclaimer) libraries: indexes assets, extracts meshes and textures, reads whole levels |
+| **Saber3D reader** (`bin/extractor/HaloBridge.H2ACampaign.dll`, source in `source/H2ACampaign`) | C#, .NET 10 | Reads Halo 2: Anniversary's remastered campaign `.pck` archives, textures and models for the extraction helper. Also a standalone command-line tool (list, extract, textures to PNG/DDS, models to OBJ) |
 | **Tag helper** (`bin/tags`, source in `source/TagBridge`) | C#, .NET Framework 4.8 | Reads and writes Editing Kit tags through the kit's own `ManagedBlam.dll`: scenarios, collision, shaders, bitmaps, skies, placements |
 
 The add-on and helpers talk through JSON files: the add-on writes a job file to the storage folder's `jobs` folder, runs the helper, and reads its result. Every run keeps a log next to its job file. Nothing is sent over the internet.
@@ -58,6 +59,26 @@ These kits have no ManagedBlam. `classic_scenario.py` runs the kit's own Tool (`
 
 Placing a single Halo 3 BSP instance also asks the tag helper for its collision, which is why that one route needs H3EK.
 
+## Importing the Halo 2: Anniversary campaign
+
+```mermaid
+flowchart LR
+  P[level .pck] --> R[Saber3D reader]
+  S[shared.pck] --> R
+  R --> G[.lg scene: LOD0 geometry, no helpers]
+  R --> T[textures: DDS or PNG, shared folder]
+  G --> C[Scene manifest in Halo coordinates]
+  T --> C
+  C --> D[Blender collections]
+```
+
+1. `jobs.h2a_campaign_paks` finds `halo2\preload\paks` from the groundhog maps folder.
+2. The extraction helper runs the `h2a_campaign_scene` job. The Saber3D reader inflates the level `.pck` (32 KB zlib chunks), reads its `1SERpak` directory, and parses the `.lg` scene: objects, transforms, vertex buffers and per-submesh materials.
+3. It keeps LOD0, drops engine helpers, converts every position to Halo world units (`(x, −z, y) / 3.048`), and writes the same `scene.json` + `mesh_N.json` layout the `.map` importer uses. Textures are read from `shared.pck` and stored once, as the smaller of the original block data (DDS) or an optimized PNG, at most **Reduce Texture Size** wide.
+4. `map_scene.import_scene` builds the collections, exactly as for an entire `.map`. Afterwards `jobs.discard_h2a_campaign_meshes` deletes the per-level geometry files; only `scene.json` and the shared textures remain.
+
+Individual assets use `h2a_campaign_index` (lists every template with visible geometry and every base texture) and `h2a_campaign_extract` (one template or material as a `preview.json`, with variants, damage states and LODs as switchable parts in `parts.json`). The file formats are documented in [`source/H2ACampaign/FORMAT.md`](../source/H2ACampaign/FORMAT.md).
+
 ## Preparing for Sapien
 
 ```mermaid
@@ -87,6 +108,7 @@ Every build is a transaction: the files HaloBridge writes are recorded in `proje
 | --- | --- |
 | `halo_bridge/` | The Blender add-on |
 | `source/Extractor/` | Extraction helper source |
+| `source/H2ACampaign/` | Saber3D (Halo 2: Anniversary campaign) reader and command-line tool, with `FORMAT.md` |
 | `source/Reclaimer/` | The pinned Reclaimer source it builds against, with its license |
 | `source/TagBridge/` | Tag helper source |
 | `source/Build.ps1` | Builds both helpers (needs the .NET 10 SDK and an H3EK for `ManagedBlam.dll`) |

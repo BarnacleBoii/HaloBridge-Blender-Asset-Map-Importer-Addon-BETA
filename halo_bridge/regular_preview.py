@@ -4,6 +4,32 @@ import bpy
 from . import compat
 
 
+# Halo 3 "double-multiplies" each detail map over the base map: x2 in the game's
+# gamma-encoded colour. Blender's nodes work on linear colour (sRGB images are
+# decoded), where the same x2 is 2^2.2. Using a plain 2 made detailed surfaces
+# roughly half as bright as in game.
+DETAIL_GAIN = 2.0 ** 2.2
+GAIN_LABEL = 'Halo detail gain'
+
+
+def refresh_gain(mat):
+    """Brighten detail previews made by older versions (x2 / x4). Returns True if changed."""
+    mode = mat.get('hb_regular_preview') if mat else None
+    if not mode or not mat.node_tree:
+        return False
+    wanted = DETAIL_GAIN ** 2 if mode in ('two_detail', 'two_detail_overlay') else DETAIL_GAIN
+    old = (4.0,) if mode in ('two_detail', 'two_detail_overlay') else (2.0,)
+    changed = False
+    for node in mat.node_tree.nodes:
+        if node.bl_idname == 'ShaderNodeVectorMath' and node.operation == 'SCALE':
+            value = node.inputs['Scale'].default_value
+            if node.label == GAIN_LABEL or any(abs(value - v) < 1e-6 for v in old):
+                if abs(value - wanted) > 1e-6:
+                    node.inputs['Scale'].default_value = wanted; changed = True
+                node.label = GAIN_LABEL
+    return changed
+
+
 def apply(mat, meta, directory):
     mode = meta.get('options', {}).get('albedo')
     if meta.get('source_game') != 'halo3' or mode not in ('default', 'detail_blend', 'two_detail', 'two_detail_overlay'):
@@ -54,8 +80,8 @@ def apply(mat, meta, directory):
         overlay = 'detail_map2' if mode == 'two_detail' else 'detail_map_overlay'
         color = multiply(color, maps[overlay].outputs['Color'])
     gain = nodes.new('ShaderNodeVectorMath')
-    gain.operation = 'SCALE'
-    gain.inputs['Scale'].default_value = 4 if mode in ('two_detail', 'two_detail_overlay') else 2
+    gain.operation = 'SCALE'; gain.label = GAIN_LABEL
+    gain.inputs['Scale'].default_value = DETAIL_GAIN ** 2 if mode in ('two_detail', 'two_detail_overlay') else DETAIL_GAIN
     links.new(color, gain.inputs[0])
     color = gain.outputs[0]
     if mode == 'default':

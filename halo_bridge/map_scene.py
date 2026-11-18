@@ -34,7 +34,8 @@ def center_existing_origins(context):
     return len(objects)
 
 
-def import_scene(context,manifest,progress=None,indices=None):
+def import_scene(context,manifest,progress=None,indices=None,skies=True):
+    """skies=False leaves out the map's sky objects (the "Import sky" toggle)."""
     manifest=Path(manifest);data=read_json(manifest)
     if data.get('kind')!='halo3_map_scene' or data.get('matrix_convention')!='row_vector':
         raise RuntimeError('Unsupported original-map scene manifest.')
@@ -49,6 +50,7 @@ def import_scene(context,manifest,progress=None,indices=None):
     try:
         for index,item in enumerate(data['placements']):
             if indices is not None and index not in indices:continue
+            if not skies and item['group']=='Skies':continue
             progress('Importing original layout '+str(index+1)+'/'+str(len(data['placements']))+': '+item['group'])
             key=item['mesh']
             if key not in cache:

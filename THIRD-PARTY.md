@@ -14,4 +14,8 @@ Halo assets, the Halo 3 Editing Kit, ManagedBlam, and MCC map files are external
 
 The v0.9.1 Reclaimer integration also retains named shader parameters/options and recognizes additional detail-map slots for preview construction. HaloBridge's regular preview implements supported albedo blending using Blender nodes. Halo 3 shader parameter behavior is documented in Microsoft's [Albedo Properties](https://learn.microsoft.com/en-us/halo-master-chief-collection/h3/shaders/albedo).
 
+The Halo 2: Anniversary campaign reader (`source/H2ACampaign`, `HaloBridge.H2ACampaign.dll`) is original HaloBridge code. Its understanding of the Saber3D formats builds on public research by Haus (Wildenhaus) in [Index](https://github.com/Wildenhaus/Index) (MIT-licensed LibH2A) and [LibSaber](https://github.com/Wildenhaus/LibSaber), credited there together with zatarita, sleepyzay and Unordinal, and on Zatarita's [SeT](https://github.com/Zatarita/SeT). No code from these projects is included. Formats and HaloBridge's own findings are documented in `source/H2ACampaign/FORMAT.md`.
+
+The optional [H3LM Lightmapper](https://github.com/Zoephie/H3LM) by Zoephie is an external program the user downloads separately; HaloBridge runs it but doesn't redistribute it.
+
 Editing Kit scenario field names and the yaw/pitch/roll convention were cross-checked against Foundry by ILoveAGoodCrisp and contributors (GPL-3.0): https://github.com/ILoveAGoodCrisp/Foundry . No Foundry code is included.

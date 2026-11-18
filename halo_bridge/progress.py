@@ -9,7 +9,7 @@ class PreparationActivity:
     """Disk-backed event history; worker threads never access Blender data."""
     def __init__(self,path,report):
         self.path=Path(path);self.path.parent.mkdir(parents=True,exist_ok=True)
-        self.path.write_text('HaloBridge preparation activity\nStage counts are not time estimates. Compiler percentages apply only to the named substep.\n',encoding='utf-8')
+        self.path.write_text('HaloBridge preparation activity\nTimes in [minutes:seconds] since preparation started. Stage numbers are not time estimates: stage 3 (Halo Tool compiling geometry) is usually the longest.\n',encoding='utf-8')
         self.report=report;self.started=time.monotonic();self.ended=None;self.phase='Validation';self.stage_number=0;self.current_log=''
         self.recent=();self.revision=0;self.last='';self.lock=threading.Lock()
     def event(self,message):
@@ -40,13 +40,79 @@ def tool_label(command):
     return {'structure':'Compiling level geometry and collision','bitmaps':'Compiling converted textures'}.get(command,command)
 
 
+# Tool's structure import, in plain words. Tool processes many objects at once and
+# names an object only in its warnings and errors, so steps describe the whole level.
+STRUCTURE_STEPS=[
+    ('parsing scene','Reading the exported level file'),
+    ('looking for shaders','Matching materials to Halo 3 shaders'),
+    ('building bsp3d','Building collision for the level\'s objects (Tool works on many at once and doesn\'t say which)'),
+    ('moving planes','Optimizing collision planes'),('moving points','Optimizing collision planes'),
+    ('merging planes','Optimizing collision planes'),('creating initial planes','Optimizing collision planes'),
+    ('finding correct planes','Optimizing collision planes'),('splitting planes','Optimizing collision planes'),('copying planes','Optimizing collision planes'),
+    ('building collision','Building the level\'s collision surfaces'),('breakable surfaces','Building the level\'s collision surfaces'),
+    ('building triangle lists','Building render geometry'),('building render','Building render geometry'),('merging triangles','Building render geometry'),
+    ('merging instances','Building render geometry'),('triangle-tangent','Building render geometry'),('triangle sections','Building render geometry'),
+    ('building edge references','Building render geometry'),('reapplying geometry','Building render geometry'),
+    ('detaching incorrect','Cleaning up triangles Tool can\'t use'),('welding','Welding vertices'),('copying vertices','Welding vertices'),('point','Welding vertices'),
+    ('leaves','Dividing the level into visibility clusters'),('subclusters','Dividing the level into visibility clusters'),
+    ('group neighbors','Dividing the level into visibility clusters'),('centroids','Dividing the level into visibility clusters'),
+    ('slice groups','Dividing the level into visibility clusters'),('merge information','Dividing the level into visibility clusters'),
+]
+WARNING_TEXT=[(r'overlapping surfaces.*','overlapping surfaces (shows as red debug geometry in Sapien; usually harmless)'),
+              (r'degenerate triangle.*','a zero-area triangle (Tool skips it)'),
+              (r'Your texture coordinates are very large.*','very large texture coordinates (textures may look slightly blurry)')]
+QUIET_WARNINGS=('is not renderable, but has flags',)  # HaloBridge's own collision-only copies
+
+
+def describe(line,names=None,state=None):
+    """A compiler line in plain words with Blender object names, or None to leave it out.
+
+    Tool's percentages here belong to whichever of its parallel jobs printed last, so
+    they jump around; they're left out. state remembers the level's mesh count."""
+    names=names or {};state=state if state is not None else {}
+    text=re.sub(r'\s+[|/\\-]\s*$','',line.strip())
+    if not text or set(text)<={'.'}:return None
+    poop=r'\(poop (hb_\d+)(?:\.\d+)?(?: merged)?\)'
+    def objects(value):
+        return re.sub(poop+r'\s*',lambda m:'on "'+names.get(m[1],m[1])+'": ',value)
+    # Tool's crash report: one line, not its stack walk and assertion text.
+    crash=('crash','ASSERTION FAILED','index>=','lifecycle','gamestate','stack walk','untracked version')
+    if text.startswith('message ') or ('-FATAL-' in text and (not re.sub(poop,'',text.split('-FATAL-',1)[1]).strip() or any(c in text for c in crash))) \
+            or ('WARNING' in text and any(c in text for c in crash)):
+        found=re.search(poop,text)
+        return 'Tool stopped (it crashed) while compiling '+('"'+names.get(found[1],found[1])+'"' if found else 'the level')+'; see the error above'
+    if 'WARNING' in text or '-ERROR-' in text or '-FATAL-' in text:
+        if any(q in text for q in QUIET_WARNINGS):return None
+        kind='Error' if ('-ERROR-' in text or '-FATAL-' in text) else 'Warning'
+        body=text.split('-ERROR-',1)[-1].split('-FATAL-',1)[-1].split('WARNING',1)[-1].strip()
+        if 'failed to add import info' in body:return 'Note: Tool could not store a copy of this very large level file in the tag (harmless)'
+        for pattern,value in WARNING_TEXT:body=re.sub(pattern,value,body)
+        return kind+' '+objects(body)
+    match=re.match(r'=== new instances: (\d+)',text)
+    if match:return 'The level has '+f'{int(match[1]):,}'+' placed objects'
+    match=re.match(r'=== new definiton: (\d+)',text)
+    if match:
+        state['meshes']=int(match[1])
+        return 'They use '+f'{int(match[1]):,}'+' different meshes'
+    if text.startswith('=== was') or text.startswith('=== starting import'):return None
+    if text.startswith('=== imported structure'):return 'Geometry and collision compiled'
+    lower=text.lower()
+    for key,value in STRUCTURE_STEPS:
+        if key in lower:
+            if key=='building bsp3d' and state.get('meshes'):
+                value='Building collision for the level\'s '+f'{state["meshes"]:,}'+' meshes (Tool works on many at once and doesn\'t say which)'
+            return value
+    return objects(re.sub(r'\s*\d+%\s*$','',text))
+
+
 class ToolProgress:
-    def __init__(self,command,log,report):
+    def __init__(self,command,log,report,names=None):
+        self.names=names or {};self.structure=command=='structure'
         self.label=tool_label(command);self.log=Path(log);self.report=report
         self.started=time.monotonic();self.last_update=-float('inf');self.last_output=self.started
         self.size=0;self.latest=''
         self.process=None;self.sample=None;self.cpu=None;self.observed=None;self.activity='CPU activity: waiting for a sample.'
-        self.last_event='';self.pending=b''
+        self.last_event='';self.pending=b'';self.warned=set();self.state={}
         if hasattr(report,'current_log'):report.current_log=str(self.log)
         if hasattr(report,'event'):report.event('Compiler log: '+str(self.log))
     def bind_process(self,process,sample):
@@ -66,9 +132,14 @@ class ToolProgress:
                     parts.append(self.pending);self.pending=b''
                 lines=[line.decode('utf-8',errors='replace').strip() for line in parts if line.strip()]
                 for line in lines:
-                    self.latest=line[:200]
                     # Rotating spinner characters are activity, not new progress.
-                    meaningful=re.sub(r'\s+[|/\\-]\s*$','',line)
+                    meaningful=describe(line,self.names,self.state) if self.structure else re.sub(r'\s+[|/\\-]\s*$','',line)
+                    if not meaningful:continue
+                    self.latest=meaningful[:200]
+                    if meaningful.startswith('Warning '):
+                        # One line per object and kind of warning, not one per surface.
+                        if meaningful in self.warned:continue
+                        self.warned.add(meaningful)
                     if meaningful!=self.last_event:
                         self.last_event=meaningful
                         if hasattr(self.report,'event'):self.report.event(self.label+': '+meaningful)
@@ -87,6 +158,7 @@ class ToolProgress:
         text=f'{self.label} | {elapsed//60:02}:{elapsed%60:02} elapsed\n{self.activity}'
         if self.latest:text+=f' | Last tool output ({quiet}s ago): {self.latest}'
         else:text+=' | Tool is running; waiting for progress output.'
-        text+='\nTime remaining: unknown. Any % above is this compiler substep only.'
+        text+=('\nTime remaining: unknown. Tool compiles many objects at once and names one only when it has a problem with it.' if self.structure
+               else '\nTime remaining: unknown. Any % above is this compiler substep only.')
         if quiet>=60:text+='\nNo new compiler output for '+str(quiet)+'s; activity does not guarantee successful completion.'
         getattr(self.report,'heartbeat',self.report)(text)

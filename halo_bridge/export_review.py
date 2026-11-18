@@ -18,9 +18,22 @@ def shader_file(kit,tag):
     if len(matches)!=1:raise ValueError('Missing or ambiguous Halo shader: '+tag)
     return matches[0]
 
+def shape(mesh):
+    """Evaluated vertex and face counts: a rejection is forgotten once these change."""
+    return f'{len(mesh.vertices)},{len(mesh.polygons)}'
+
 def inspect(objects,config):
+    steps=inspect_steps(objects,config)
+    while True:
+        try:next(steps)
+        except StopIteration as done:return done.value
+
+
+def inspect_steps(objects,config):
+    """inspect() one object at a time (yields between objects so Blender keeps responding)."""
     issues={};used={};reach={};depsgraph=bpy.context.evaluated_depsgraph_get()
     for obj in objects:
+        yield
         errors=[];evaluated=obj.evaluated_get(depsgraph);mesh=None
         try:
             units=float(obj.get('hb_working_units',bpy.context.scene.get('hb_working_units',100)))
@@ -29,6 +42,9 @@ def inspect(objects,config):
             if abs(obj.matrix_world.to_3x3().determinant())<1e-12:raise ValueError('Object has zero scale.')
             mesh=evaluated.to_mesh(preserve_all_data_layers=True,depsgraph=depsgraph)
             if not mesh.polygons:raise ValueError('No mesh faces remain after modifiers.')
+            rejected=obj.get('hb_tool_rejected')
+            if rejected and obj.get('hb_tool_rejected_shape')==shape(mesh):
+                raise ValueError('Halo Tool rejected this object in an earlier preparation ('+rejected+'). Change it (for example its Decimate ratio) or use Retry objects Tool rejected to try it again.')
             if any(not math.isfinite(x) for v in mesh.vertices for x in v.co):raise ValueError('Mesh contains non-finite coordinates.')
             # Tool asserts on geometry beyond +/-10,000 world units (mesh_mopp IN_RANGE_INCLUSIVE).
             matrix=obj.matrix_world;extent=0.0

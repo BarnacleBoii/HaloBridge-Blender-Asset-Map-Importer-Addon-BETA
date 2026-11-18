@@ -18,13 +18,21 @@ Halo terrain blends up to four shaders (for example grass, rock, dirt and sand) 
 
 1. Load the original textures (above).
 2. Click **Create paintable terrain**. The material becomes an editable copy that starts with the level's original blend.
-3. Choose a **Texture resolution**: 512, 1024, 2048 or 4096. This is the size of the baked texture, so bigger terrain needs a higher value.
+3. Click **Add layer** for another layer, up to Halo 3's limit of four. Some shipped terrains have only three, like the starter template's Jungle ground. The new layer starts as a copy of layer 1: choose its image, then paint it. In this editor, white in the mask selects layer 4.
 4. Expand **Repeat settings** to change how often each layer's texture tiles (X and Y are used).
 5. Each layer has its own collapsible section, **Shader 1** to **Shader 4**, named after its texture. Open one to see its base, detail and normal images.
 6. Click **Paint** in a layer's header. Blender switches to Texture Paint with that layer selected; paint on the mesh to show that layer there.
 7. **Paint original blend** paints the level's original mix back.
 8. Click **Pack texture edits into blend**, then save your `.blend`.
-9. Prepare the level. HaloBridge bakes the color and normal result into textures and a shader under your level.
+9. Prepare the level. HaloBridge writes a real Halo 3 terrain shader (`shader_terrain`) under your level. Each layer keeps its own textures at full resolution and its own repeat, and only your painted blend becomes the terrain's blend map, so the ground stays sharp in Sapien however large it is.
+
+### Terrain from a plain material (starter template)
+
+When the source material is an ordinary texture rather than a Halo terrain shader (for example the starter level shell's ground), **Create paintable terrain** makes a simpler editor with three layers: **Shader 1** (black in the mask), **Shader 2** (red) and **Shader 3** (green).
+
+- Click **Add layer 4** for a fourth layer, painted with blue. Halo 3 terrain shaders allow four layers at most.
+- Choose each layer's image with the folder button and set its repeat under **Repeat settings**.
+- Preparation exports this terrain as a real `shader_terrain` too. **Texture resolution** has no effect on terrain; it applies to editable colors, which are still baked.
 
 Tips:
 

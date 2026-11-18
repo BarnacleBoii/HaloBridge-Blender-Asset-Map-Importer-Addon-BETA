@@ -15,6 +15,11 @@ namespace Reclaimer.Blam.Halo1
             : base(item)
         { }
 
+        // HaloBridge: the tag id of the BSP's lightmap bitmap (one page per lightmap block): the
+        // last word of its tag reference (MCC reuses the reference's third word, offset 8).
+        [Offset(12)]
+        public int LightmapBitmapId { get; set; }
+
         [Offset(8)]
         public int MccVertexDataAddress { get; set; }
 
@@ -143,6 +148,10 @@ namespace Reclaimer.Blam.Halo1
     [FixedSize(32)]
     public class LightmapBlock
     {
+        // HaloBridge: page of the BSP's lightmap bitmap (-1: not lightmapped).
+        [Offset(0)]
+        public short BitmapIndex { get; set; }
+
         [Offset(20)]
         public BlockCollection<MaterialBlock> Materials { get; set; }
     }

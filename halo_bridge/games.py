@@ -13,7 +13,7 @@ from .catalog import detect_paths
 
 GAMES={
     'halo3':dict(label='Halo 3',import_label='Halo 3',map_name='010_jungle.map',import_enabled=True,sapien_enabled=True,scenario_enabled=True,
-                 kit='H3EK',mcc='halo3',generation='halo3',scenario='levels\\multi\\guardian\\guardian',sky='levels\\multi\\deadlock\\deadlock'),
+                 kit='H3EK',mcc='halo3',generation='halo3',scenario='levels\\multi\\guardian\\guardian',sky='levels\\multi\\isolation\\isolation'),
     'odst':dict(label='Halo 3: ODST',import_label='Halo 3: ODST',map_name='h100.map',import_enabled=True,sapien_enabled=True,scenario_enabled=True,
                 kit='H3ODSTEK',mcc='halo3odst',generation='halo3odst',scenario='levels\\atlas\\h100\\h100',sky='levels\\atlas\\h100\\h100'),
     'reach':dict(label='Halo: Reach',import_label='Halo: Reach',map_name='70_boneyard.map',import_enabled=True,sapien_enabled=False,scenario_enabled=True,
@@ -25,6 +25,12 @@ GAMES={
                  kit='HCEEK',mcc='halo1',generation='halo1',scenario='levels\\test\\bloodgulch\\bloodgulch',sky=''),
     'halo2':dict(label='Halo 2',import_label='Halo 2',map_name='ascension.map',import_enabled=True,sapien_enabled=False,scenario_enabled=True,classic=True,
                  kit='H2EK',mcc='halo2',generation='halo2',scenario='scenarios\\multi\\ascension\\ascension',sky=''),
+    # Halo 2: Anniversary multiplayer (MCC "groundhog"): Halo 4 engine tags, read from the
+    # installed .map files; preparation targets Halo 3/ODST like the other games.
+    # No .scenario import: H2AMPEK's ManagedBlam is the Halo 4 generation, and a map its
+    # Tool builds is uncompressed past 2 GB (offsets overflow), so it cannot be read.
+    'h2a':dict(label='Halo 2: Anniversary',import_label='Halo 2: Anniversary',map_name='ca_ascension.map',import_enabled=True,sapien_enabled=False,scenario_enabled=False,
+               kit='H2AMPEK',mcc='groundhog',generation='groundhog',scenario='levels\\sway\\ca_ascension\\ca_ascension',sky=''),
     'halo4':dict(label='Halo 4',import_enabled=False,sapien_enabled=False,scenario_enabled=False),
 }
 IMPORT_ITEMS=[(key,value['import_label'],'Import assets and maps; preparation uses the separately selected Sapien destination') for key,value in GAMES.items() if value['import_enabled']]
@@ -35,23 +41,36 @@ SAPIEN_ITEMS+=[('reach','Halo: Reach — not available yet','Reach importing is 
 def detected(game):
     return detect_paths(game)
 
+def _saved(settings,game):
+    """A game's saved folders; each blank one falls back to detection, and the
+    storage folder always has a value (a blank one would resolve against
+    Blender's own folder)."""
+    profiles=json.loads(getattr(settings,'game_profiles','') or '{}')
+    chosen=profiles.get(game) or {};found=None
+    result={}
+    for key in ('kit','cache','maps'):
+        value=chosen.get(key,'')
+        if not value:
+            found=found if found is not None else detected(game)
+            value=found.get(key,'')
+        result[key]=value
+    if not result['cache']:
+        from .catalog import default_storage
+        result['cache']=str(default_storage(game))
+    return result
+
 def destination(settings):
     if not hasattr(settings,'export_target'):return settings
     game=settings.export_target
     if game==settings.game:
         return SimpleNamespace(kit=settings.kit,cache=settings.cache,maps=settings.maps,game=game)
-    profiles=json.loads(settings.game_profiles or '{}')
-    profile=profiles.get(game) or detected(game)
-    kit=profile.get('kit','')
-    return SimpleNamespace(kit=kit,cache=profile.get('cache',''),maps=profile.get('maps',''),game=game)
+    return SimpleNamespace(game=game,**_saved(settings,game))
 
 def profile(settings,game):
     """Kit, cache and maps folders for any import game (the current one or its saved profile)."""
     if game==settings.game:
         return dict(kit=settings.kit,cache=settings.cache,maps=settings.maps,game=game)
-    profiles=json.loads(getattr(settings,'game_profiles','') or '{}')
-    chosen=profiles.get(game) or detected(game)
-    return dict(kit=chosen.get('kit',''),cache=chosen.get('cache',''),maps=chosen.get('maps',''),game=game)
+    return dict(game=game,**_saved(settings,game))
 
 def target_game():
     """The Sapien destination of the current scene (Halo 3 outside Blender)."""

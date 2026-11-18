@@ -41,6 +41,7 @@ def apply(mat, meta, directory, editable=False):
         for index,t in enumerate(layers):
             ch=t['blend_channel'];n=nodes.new('ShaderNodeMixRGB');links.new(strength,n.inputs[0]);links.new(weights[ch],n.inputs[1]);links.new(math('DIVIDE',channels[index],total),n.inputs[2]);weights[ch]=n.outputs[0]
         mat['hb_layers']=json.dumps(['Shader '+str(i+1) for i in range(len(layers))])
+        mat['hb_layer_channels']=json.dumps([t['blend_channel'] for t in layers])
     combined=None;normal_sum=None
     for index,t in enumerate(layers):
         name='Shader '+str(index+1);color=image(t,name).outputs['Color'];channel=t['blend_channel']

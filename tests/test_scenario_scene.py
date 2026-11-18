@@ -252,6 +252,12 @@ class SourceFormatTests(unittest.TestCase):
         self.assertEqual(sf.split_material_name('blur)!='), ('blur', '!='))
         self.assertEqual(sf.split_material_name("'water_030"), ('water_030', ''))
         self.assertEqual(sf.split_material_name('voi rubber_wire !'), ('voi rubber_wire', '!'))
+        # Lightmapper, sound and decal symbols (100_citadel, s3d_waterfall).
+        self.assertEqual(sf.split_material_name('cit glass_activation]'), ('cit glass_activation', ']'))
+        self.assertEqual(sf.split_material_name('s3dtut flare_star_01 !={'), ('s3dtut flare_star_01', '!={'))
+        self.assertIn('decal_offset', sf.material_flags('cit glass_activation]'))
+        self.assertEqual(sf.split_material_name('s3dwtf lamp_01_blue_01!)(')[0], 's3dwtf lamp_01_blue_01')
+        self.assertEqual(sf.split_material_name('s3dwtf lamp_01_cyan_green_lt_01!=)(')[0], 's3dwtf lamp_01_cyan_green_lt_01')
         # ASS names are whole quoted lines, even with an embedded quote.
         self.assertEqual(sf.Reader('"%"-?bridge"\n7\n').line(), '%"-?bridge')
         flags = sf.material_flags('stone', ['BM_FLAGS 1000100000000000000000'])
@@ -352,6 +358,40 @@ class ScenarioBuildTests(unittest.TestCase):
         materials = scenario_scene.Materials(self.config['kit'])
         wire = materials.get('voi rubber_wire !', ['levels\\solo\\020_base\\shaders\\rubber_wire', 'levels\\solo\\040_voi\\shaders\\plastic\\rubber_wire'])
         self.assertEqual(materials.metas()[wire]['shader'], 'levels\\solo\\040_voi\\shaders\\plastic\\rubber_wire')
+
+    def test_unprefixed_name_prefers_the_owning_levels_shaders(self):
+        # 070_waste BSPs reference both their own panel_ext_vert_minimal and Citadel's.
+        materials = scenario_scene.Materials(self.config['kit'])
+        shaders = ['levels\\solo\\070_waste\\shaders\\panel_ext_vert_minimal', 'levels\\solo\\100_citadel\\shaders\\panel_ext_vert_minimal']
+        own = materials.get('panel_ext_vert_minimal', shaders, (), 'levels\\solo\\070_waste\\070_bsp_030')
+        self.assertEqual(materials.metas()[own]['shader'], shaders[0])
+        self.assertNotIn('panel_ext_vert_minimal', materials.unresolved)
+        # Objects look in their own folder's shaders, then their parents'.
+        rock = materials.get('rock', ['objects\\a\\shaders\\rock', 'objects\\b\\shaders\\rock'], (), 'objects\\b\\boulder\\boulder')
+        self.assertEqual(materials.metas()[rock]['shader'], 'objects\\b\\shaders\\rock')
+        # Still ambiguous when neither is nearby.
+        materials.get('slab', ['objects\\a\\shaders\\slab', 'objects\\b\\shaders\\slab'], (), 'levels\\x\\x')
+        self.assertIn('slab', materials.unresolved)
+
+    def test_render_model_block_order_fills_unmatched_names(self):
+        # warthog_snow keeps its source names but its tag points at the snow shaders.
+        folder = 'objects\\vehicles\\warthog\\shaders\\'
+        block = [folder + 'chassis', folder + 'exterior_snow', 'shaders\\invalid']
+        shaders = [folder + 'chassis', folder + 'exterior_snow']
+        names = ['chassis', '+sky', 'exterior%', 'chassis', 'Material #288']
+        materials = scenario_scene.Materials(self.config['kit'])
+        ordered = materials.by_order(names, block, shaders, 'objects\\vehicles\\warthog\\warthog_snow')
+        self.assertEqual(ordered, {'exterior': folder + 'exterior_snow', 'material #288': 'shaders\\invalid'})
+        ids = [materials.get(n, shaders, (), 'objects\\vehicles\\warthog\\warthog_snow', ordered) for n in names]
+        self.assertEqual(materials.metas()[ids[2]]['shader'], folder + 'exterior_snow')
+        self.assertEqual(materials.metas()[ids[2]]['name'], 'exterior_snow %')
+        # A tag without a shader there stays unassigned, with its own warning.
+        self.assertEqual(materials.metas()[ids[4]]['shader'], '')
+        self.assertIn('Material #288', materials.invalid)
+        self.assertEqual(materials.unresolved, {})
+        # The order is ignored when a matched name sits somewhere else.
+        self.assertEqual(materials.by_order(['exterior', 'chassis'], block, shaders), {})
+        self.assertEqual(materials.by_order(names, block[:1], shaders), {})
 
     def test_build_layout_materials_and_variants(self):
         folder = self.root / 'work'; folder.mkdir()

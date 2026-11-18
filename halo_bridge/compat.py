@@ -71,6 +71,18 @@ def custom_normals(mesh, normals):
     mesh.normals_split_custom_set_from_vertices(normals)
 
 
+def corner_normals(mesh):
+    """Per-corner (loop) normals as a flat float list, on every supported Blender."""
+    count = len(mesh.loops)
+    values = [0.0] * (count * 3)
+    if hasattr(mesh, 'corner_normals'):  # Blender 4.1+
+        mesh.corner_normals.foreach_get('vector', values)
+    else:
+        mesh.calc_normals_split()
+        mesh.loops.foreach_get('normal', values)
+    return values
+
+
 def unified_paint(context, paint):
     return getattr(paint, 'unified_paint_settings', None) or getattr(context.tool_settings, 'unified_paint_settings', None)
 
@@ -138,6 +150,28 @@ def section(layout, idname, title, icon='NONE', default_closed=False):
         return header, body
     box.label(text=title, icon=icon)
     return box, box
+
+
+def has_eevee_shadow_switch(scene):
+    """EEVEE Next (Blender 4.2+) has one scene-wide shadow switch; EEVEE Legacy does not."""
+    return hasattr(getattr(scene, 'eevee', None), 'use_shadows')
+
+
+def eevee_shadows(scene):
+    return bool(scene.eevee.use_shadows) if has_eevee_shadow_switch(scene) else True
+
+
+def set_eevee_shadows(scene, enabled):
+    """Turn EEVEE's shadows on or off. Returns True if the setting changed.
+
+    Whole Halo levels overflow EEVEE Next's virtual shadow map pool ("Shadow buffer
+    full"), which slows Material Preview to a crawl; Halo lighting is baked, so the
+    viewport loses little by not drawing them.
+    """
+    if not has_eevee_shadow_switch(scene) or scene.eevee.use_shadows == bool(enabled):
+        return False
+    scene.eevee.use_shadows = bool(enabled)
+    return True
 
 
 def clear_view_fog(screens, start=0.1, end=999999.0, unit_scale=1.0):

@@ -16,13 +16,18 @@ with tempfile.TemporaryDirectory() as tmp:
     shader=Path(tmp)/'tags/fixture/test.shader';shader.parent.mkdir(parents=True);shader.write_bytes(b'fixture')
     obj.data.materials.clear();mat=bpy.data.materials.new('fixture');mat['hb_shader']=r'fixture\test';obj.data.materials.append(mat)
     def export(cfg,path,progress=None):
+        # Preparation runs the export a step at a time from a timer.
         assert cfg['sky_scenario']==r'levels\multi\shrine\shrine'
+        yield;yield
+        return []
+    def exported(cfg,path,progress=None):
+        yield
         return []
     def wait():
         deadline=time.monotonic()+5
         while ui._task and time.monotonic()<deadline:ui.poll();time.sleep(.01)
         assert not ui._task and not ui._error,ui._error
-    with patch.object(ui.build,'ensure_sapien_closed'),patch.object(ui.geometry_export,'export',side_effect=export) as exp,patch.object(ui.build,'prepare',return_value='test.scenario') as build,patch.object(ui.map_export,'prepare',side_effect=AssertionError('Original base must never be used')),patch.object(ui,'confirm_map_warnings') as popup:
+    with patch.object(ui.build,'ensure_sapien_closed'),patch.object(ui.geometry_export,'export_steps',side_effect=export) as exp,patch.object(ui.build,'prepare',return_value='test.scenario') as build,patch.object(ui.map_export,'prepare',side_effect=AssertionError('Original base must never be used')),patch.object(ui,'confirm_map_warnings') as popup:
         bpy.ops.halo_bridge.prepare();assert popup.call_count==1;assert not exp.called and not build.called
         bpy.ops.halo_bridge.prepare(warnings_accepted=True)
         assert ui._prepare_running and ui.prepare_button_text().startswith('(LOADING...PLEASE WAIT)')
@@ -30,7 +35,7 @@ with tempfile.TemporaryDirectory() as tmp:
         assert not ui._prepare_running and ui.prepare_button_text()=='Prepare current scene for sapien'
         assert ui._prepare_status.startswith('Finished.')
         assert 'Edits, transforms, modifiers and deletions' in bpy.data.texts['HaloBridge preparation report'].as_string()
-    with patch.object(ui.build,'ensure_sapien_closed'),patch.object(ui.geometry_export,'export',return_value=[]),patch.object(ui.build,'prepare',side_effect=RuntimeError('Compiler fixture failure')):
+    with patch.object(ui.build,'ensure_sapien_closed'),patch.object(ui.geometry_export,'export_steps',side_effect=exported),patch.object(ui.build,'prepare',side_effect=RuntimeError('Compiler fixture failure')):
         bpy.ops.halo_bridge.prepare(warnings_accepted=True)
         while ui._task:ui.poll();time.sleep(.01)
         assert not ui._prepare_running and 'Compiler fixture failure' in ui._prepare_status

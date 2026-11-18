@@ -26,10 +26,12 @@ with tempfile.TemporaryDirectory() as tmp:
     assert blender_ops.link_verified_scenery([obj],{'matches':[match]})==1
     assert obj['hb_scenery_tag']=='fixture/scenery' and obj['hb_verified_collision_tag']=='fixture/collision'
     compiled=[]
-    def export(cfg,path):
+    def export(cfg,path,scene=None):
+        # Preparation exports a step at a time (the level file is written in the background).
         assert obj['hb_kind']=='scenery' and obj['hb_collision']=='tag'
+        yield
         return [dict(tag=obj['hb_scenery_tag'])]
-    ui.blender_ops.export_scene=export
+    ui.blender_ops.export_scene_steps=export
     def build(cfg,path,placements,cancel,progress):
         compiled.extend(placements);return 'fixture.scenario'
     ui.build.prepare=build

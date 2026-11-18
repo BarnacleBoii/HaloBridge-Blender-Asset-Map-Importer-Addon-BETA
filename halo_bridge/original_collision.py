@@ -6,6 +6,8 @@ from . import jobs, vehicles
 from .catalog import read_json
 from .diagnostics import ValidationError
 
+COLLISION_GAMES = ('halo3', 'odst', 'reach')
+
 def get(obj, config, progress):
     tag=obj.get('hb_source_tag','')
     # Set after Tool rejected this object's original collision as ambiguous.
@@ -32,6 +34,9 @@ def get(obj, config, progress):
         preview=read_json(source/'preview.json',{})
         if set(json.loads(obj['hb_parts_enabled']))!={m.get('choice') for m in preview.get('meshes',[])}:return None
     game=obj.get('hb_game','halo3')
+    # The tag helper uses the Halo 3 generation's ManagedBlam (Halo 3, ODST, Reach kits);
+    # Halo 2: Anniversary's kit is the Halo 4 generation, so its objects use the fallback too.
+    if game not in COLLISION_GAMES:return None
     if game==config.get('game','halo3'):kit=config['kit']
     else:kit=config.get('source_kits',{}).get(game) or (config.get('reach_collision_kit') if game=='reach' else '')
     # Halo CE / Halo 2 kits have no ManagedBlam; their objects use the static collision fallback.

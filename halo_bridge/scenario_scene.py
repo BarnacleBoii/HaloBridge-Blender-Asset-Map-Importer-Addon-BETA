@@ -27,7 +27,11 @@ KIND = 'halo3_scenario_scene'
 # Cached scenes from earlier versions are rebuilt.
 # 5: faces without a material are skipped individually instead of failing the import
 # or dropping their whole BSP object.
-VERSION = 5
+# 6: shader names without a collection prefix prefer the owning tag's own shaders folder.
+# 7/8: { [ ] ( material symbols are stripped from shader names.
+# 9: render-model materials whose names match no shader use the tag's materials block order.
+VERSION = 9
+INVALID_SHADER = 'shaders\\invalid'
 # Placement categories built into Blender, and how each one exports.
 EXPORT = {'Scenery': 'scenery', 'Vehicles': 'vehicle', 'Crates': 'static',
           'Machines': 'static', 'Controls': 'static'}
@@ -100,8 +104,9 @@ class Materials:
         self.collections = shader_collections(kit)
         self.table = {}
         self.unresolved = {}
+        self.invalid = {}
 
-    def _resolve(self, base, shaders):
+    def _resolve(self, base, shaders, owner=''):
         lowered = {s.lower(): s for s in shaders}
         name, folder = base, None
         if ' ' in base:
@@ -127,23 +132,65 @@ class Materials:
             # Shaders may sit in subfolders (voi rubber_wire -> 040_voi\shaders\plastic\rubber_wire);
             # prefer the one inside the named collection.
             matches = [s for s in matches if s.lower().startswith(folder.lower() + '\\')]
+        if len(matches) > 1 and not folder and owner:
+            # A name without a collection prefix belongs to the owning tag's own
+            # shaders folder, as Tool resolves it: 070_waste's BSPs use
+            # levels\solo\070_waste\shaders\panel_ext_vert_minimal, not Citadel's
+            # shader of the same name. Walk up from the tag's folder.
+            parts = owner.replace('/', '\\').lower().split('\\')[:-1]
+            while parts:
+                local = '\\'.join(parts) + '\\shaders\\'
+                near = [s for s in matches if s.lower().startswith(local)]
+                if near:
+                    matches = near
+                    break
+                parts.pop()
         return matches[0] if len(matches) == 1 else ''
 
-    def get(self, source_name, shaders, lighting=(), owner=''):
+    def by_order(self, names, block, shaders, owner=''):
+        """Shaders for unresolved names, taken from a render model's materials block.
+
+        Tool fills the block with one entry per distinct source material name, in
+        the order the JMS files list them (special materials take no entry). The
+        order is trusted only when every name that does resolve sits at its own
+        position; then retextured models (warthog_snow keeps "exterior" but uses
+        exterior_snow) and default 3ds Max names still get the tag's real shader.
+        """
+        index = {}
+        for source_name in names:
+            if not sf.is_special(source_name):
+                index.setdefault(sf.split_material_name(source_name)[0].lower(), len(index))
+        if not block or len(index) > len(block):
+            return {}
+        found = {}
+        for base, position in index.items():
+            shader = self._resolve(base, shaders, owner)
+            if shader:
+                if shader.lower() != block[position].lower():
+                    return {}
+            elif block[position]:
+                found[base] = block[position]
+        return found
+
+    def get(self, source_name, shaders, lighting=(), owner='', ordered=None):
         """Material id for a source material name in a tag's shader set."""
         if sf.is_special(source_name):
             key = ('special', source_name.strip().lower())
             shader, flags, name = '', [], source_name.strip()
         else:
             base, symbols = sf.split_material_name(source_name)
-            shader = self._resolve(base, shaders)
+            shader = self._resolve(base, shaders, owner) or (ordered or {}).get(base.lower(), '')
+            if shader.lower() == INVALID_SHADER:
+                # The tag itself has no shader here; the game shows its invalid shader.
+                self.invalid.setdefault(base, set()).add(owner)
+                shader = ''
+            elif not shader:
+                self.unresolved.setdefault(base, set()).add(owner)
             flags = sf.material_flags(source_name, lighting)
             name = leaf(shader) if shader else base
             if symbols:
                 name += ' ' + symbols
             key = ('shader', shader.lower() if shader else 'unresolved:' + base.lower(), tuple(flags))
-            if not shader:
-                self.unresolved.setdefault(base, set()).add(owner)
         if key not in self.table:
             self.table[key] = dict(id=len(self.table), name=name or 'unnamed', shader=shader, alpha='opaque',
                                    textures=[], flags=flags, source_name=source_name, special=key[0] == 'special')
@@ -306,8 +353,11 @@ def build(config, scenario, data, folder, progress=None, cancel=None):
         mesh_key = 'object_' + stable_id(key, signature)
         if mesh_key not in meshes:
             records, selection = [], []
+            shaders = info.get('shaders', [])
+            ordered = materials.by_order([m['name'] for _p, jms in parsed[key] for m in jms['materials']],
+                                         info.get('material_order', []), shaders, render)
             for path, jms in parsed[key]:
-                ids = [materials.get(m['name'], info.get('shaders', []), (), render) for m in jms['materials']]
+                ids = [materials.get(m['name'], shaders, (), render, ordered) for m in jms['materials']]
                 triangles, report = sf.select_render_triangles(jms, wanted)
                 unassigned = sf.unassigned_triangles(jms)
                 if unassigned:
@@ -366,6 +416,9 @@ def build(config, scenario, data, folder, progress=None, cancel=None):
 
     for name, owners in sorted(materials.unresolved.items()):
         warnings.append('Material "' + name + '" has no unique shader reference in ' + ', '.join(sorted(owners)) + '. Assign a Halo shader before preparing.')
+    for name, owners in sorted(materials.invalid.items()):
+        warnings.append('Material "' + name + '" in ' + ', '.join(sorted(owners)) + ' has no shader in the original tag either (the game shows '
+                        'its invalid shader there). Assign a Halo shader before preparing.')
     return dict(materials=materials, meshes=meshes, placements=placements, fallback=fallback,
                 warnings=warnings, counts=counts, decoded=decoded)
 
@@ -645,8 +698,10 @@ def is_scenario_object(obj):
     return bool(obj.get('hb_scenario_manifest'))
 
 
-def import_scene(context, manifest, progress=None):
-    """Build the scene off-screen; publish the collection once every object exists."""
+def import_scene(context, manifest, progress=None, skies=True):
+    """Build the scene off-screen; publish the collection once every object exists.
+
+    skies=False leaves out the level's sky objects (the "Import sky" toggle)."""
     import bpy
     from mathutils import Matrix
     from .blender_ops import mesh_from_preview, mesh_signature, new_id
@@ -665,6 +720,8 @@ def import_scene(context, manifest, progress=None):
     try:
         rows = data['placements']
         for index, row in enumerate(rows):
+            if not skies and row['group'] == 'Skies':
+                continue
             progress('Building ' + leaf(data['scenario']) + ' ' + str(index + 1) + '/' + str(len(rows)) + ': ' + row['group'])
             key = row['mesh']
             if key not in cache:

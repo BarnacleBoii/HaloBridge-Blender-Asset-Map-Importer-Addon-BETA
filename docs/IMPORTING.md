@@ -2,13 +2,14 @@
 
 [Home](../README.md) · [Installation](INSTALLATION.md) · [First map](FIRST-MAP.md) · [Sidebar reference](FEATURES.md) · [Troubleshooting](TROUBLESHOOTING.md)
 
-HaloBridge has three ways to bring Halo content into Blender. You don't need to prepare a Sapien level to use any of them; importing on its own is fine.
+HaloBridge has four ways to bring Halo content into Blender. You don't need to prepare a Sapien level to use any of them; importing on its own is fine.
 
 | Route | Button | Best for | Source |
 | --- | --- | --- | --- |
-| [**Level from .scenario**](#1-import-a-level-from-its-scenario-recommended) | **Import level from .scenario (Recommended)** | Editing an original level and sending it back to Sapien | Editing Kit tags (textures from the `.map`) |
+| [**Level from .scenario**](#1-import-a-level-from-its-scenario-recommended) | **Import level from .scenario** | Editing an original level and sending it back to Sapien | Editing Kit tags (textures from the `.map`) |
 | [**Entire .map**](#2-import-an-entire-map) | **Import entire .map** | Any level in MCC, including ones without kit tags | MCC `.map` file |
-| [**Asset list**](#3-browse-and-place-individual-assets) | **Index .map Assets** / **Index .scenario Assets** | Picking individual models, scenery and materials | Either |
+| [**Anniversary campaign level**](#4-import-a-halo-2-anniversary-campaign-level) | **Import campaign level** | Halo 2: Anniversary's remastered campaign | MCC `halo2\preload\paks` (`.pck`) |
+| [**Asset list**](#3-browse-and-place-individual-assets) | **Index .map Assets** / **Index .scenario Assets** / **Index All Individual Assets** | Picking individual models, scenery and materials | Any of the above |
 
 Before you start, finish [Installation](INSTALLATION.md) and set the folders for the game you want under **Folders and Setup**.
 
@@ -19,12 +20,14 @@ A `.scenario` is the master tag of a level in the Editing Kit. It lists the leve
 **Steps**
 
 1. Choose the **Import game** and make sure its **Editing Kit** folder is set.
-2. In **Folders and Setup → Import level from .scenario (Recommended)**, click the **⌄** arrow next to the scenario field. A searchable list of every scenario in the kit opens; type part of a name (for example `guardian`) and pick one. You can also type the path yourself, without the `.scenario` extension: `levels\multi\guardian\guardian`.
-3. Click **Import level from .scenario (Recommended)**. Progress shows at the bottom of the sidebar. A large level can take a few minutes the first time; later imports of the same level reuse the cache.
+2. In **Folders and Setup → Import level from .scenario**, click the **⌄** arrow next to the scenario field. A searchable list of every scenario in the kit opens; type part of a name (for example `guardian`) and pick one. You can also type the path yourself, without the `.scenario` extension: `levels\multi\guardian\guardian`.
+3. Click **Import level from .scenario**. Progress shows at the bottom of the sidebar. A large level can take a few minutes the first time; later imports of the same level reuse the cache.
 4. When it finishes, read the **HaloBridge scenario import report** in Blender's Text Editor. It lists anything that couldn't be imported.
 5. Switch the viewport to **Material Preview** (the third sphere icon at the top right of the 3D View) to see textures.
 
 The new objects go into a collection named after the level, split into sub-collections (BSPs, Scenery, Crates, Machines, Vehicles and so on).
+
+Whole levels are big. To keep the viewport fast, HaloBridge turns off EEVEE's viewport shadows after a level import (this also removes the "Shadow buffer full" message). Turn them back on with **Folders and Setup → Viewport Shadows** if you need them.
 
 ### What you get (Halo 3 and ODST)
 
@@ -74,6 +77,7 @@ The asset list (**Indexed Asset List**) is a catalogue of every model, piece of 
 
 - **Index .map Assets** (under **Import entire .map**): everything the compiled map loads, including shared objects such as characters, weapons and vehicles. Best for browsing and kitbashing.
 - **Index .scenario Assets** (under **Import level from .scenario**): only the level's own objects, instanced meshes and shaders, built from the kit's source files with exact shader names. Best for editing and Sapien.
+- **Index All Individual Assets** (under **Import Anniversary campaign level**, Halo 2: Anniversary only): every remastered campaign model (about 1,070) and texture material (about 2,250). See [Halo 2: Anniversary campaign](H2A-CAMPAIGN.md#index-and-place-individual-assets).
 
 Index as many levels and games as you like; each one adds to that game's list.
 
@@ -127,7 +131,18 @@ Each selected object is replaced by the asset at the same position and rotation,
 
 ### Model parts and variants
 
-Select a placed model (a Warthog, a Spartan, a crate with damage states) and the **Model Parts and Variants** section appears. Expand a region with its arrow and tick the pieces you want visible. **Separate enabled parts into objects** splits the visible pieces into separate objects; **Separate all parts and variants into objects** splits every alternative, so several pieces can end up in the same spot. Choose one in the Outliner before moving it.
+Select a placed model (a Warthog, a Spartan, a crate with damage states, an Anniversary Elite with its rank armor) and the **Model Parts and Variants** section appears. Expand a region with its arrow and tick the pieces you want visible. **Separate enabled parts into objects** splits the visible pieces into separate objects; **Separate all parts and variants into objects** splits every alternative, so several pieces can end up in the same spot. Choose one in the Outliner before moving it.
+
+## 4. Import a Halo 2: Anniversary campaign level
+
+Halo 2: Anniversary's remastered campaign graphics come from a separate engine (Saber3D) and live in `.pck` archives in MCC's `halo2\preload\paks` folder. HaloBridge reads them directly.
+
+1. Set **Import game** to **Halo 2: Anniversary** and its **.map Files** folder to MCC's `groundhog\maps` (**Detect folders** does this).
+2. In **Import Anniversary campaign level** (above **Import entire .map**), pick a level with the **⌄** arrow, for example `01a_tutorial.pck` (The Armory).
+3. Optional: lower **Reduce Texture Size** to save disk space and memory.
+4. Click **Import campaign level**, and switch to **Material Preview** when it finishes.
+
+You get the level's remastered geometry and textures in **Level geometry**, **Decals** and **Glass** collections, at the same coordinates as the original Halo 2 level. Only the highest-detail pieces are imported, and engine helpers are left out. The temporary geometry files are deleted after the import; the textures are kept once for all levels. Full details, storage, coordinates and limits: [Halo 2: Anniversary campaign](H2A-CAMPAIGN.md).
 
 ## Use assets from any game in one level
 
@@ -139,7 +154,7 @@ Assets from Halo: CE, Halo 2, Halo 3: ODST and Halo: Reach can sit in the same H
 
 During preparation, each object's current mesh and position are exported as static geometry. Any material whose shader isn't from the destination game is rebuilt as level-local Halo 3 bitmaps and shaders: base color, normal map, UV tiling and cut-out transparency. ODST shaders that also exist in H3EK reuse the Halo 3 shader instead.
 
-Collision uses the original collision from the source game's Editing Kit when that kit is installed (Halo 3, ODST and Reach); Halo: CE and Halo 2 objects use a box or their mesh surfaces. If Tool rejects an object's collision, HaloBridge recompiles that object with a simple box, then without collision, and the report says so.
+Collision uses the original collision from the source game's Editing Kit when that kit is installed (Halo 3, ODST and Reach). Otherwise an object collides with its own mesh surfaces. If Tool rejects an object's collision (for example "degenerate collision edge"), HaloBridge recompiles that object with its surfaces cleaned for Tool (vertices closer than 0.002 world units merged, zero-length edges and slivers removed), then with a simple box as a last resort, then without collision, and the report says so.
 
 Gameplay objects aren't converted: a Reach Warthog from another game becomes a static shape. Sky models placed from an asset list are left out of the level geometry; choose the level's sky under **Sapien Sky** instead.
 
@@ -160,8 +175,9 @@ Under **Sapien Sky (Experimental)**, choose the **Game** first, then the **Sky**
 Things to know about converted skies:
 
 - Sky textures are converted as self-lit (unshaded), so they look like a skybox.
-- A converted sky has no sky lighting of its own. If **Generate Test Lighting** is on, the level is lit with the destination kit's sky (the last one you chose for that game, or Deadlock), and then the converted sky is swapped in.
-- Halo: CE and Halo 2 skies are stacks of see-through layers, so their converted shaders blend additively and can look bright.
+- A converted sky has no sky lighting of its own. If **Generate Test Lighting** is on, the level is lit with the destination kit's sky (the last one you chose for that game, or Isolation), and then the converted sky is swapped in.
+- Halo: CE skies are stacks of see-through layers, so their converted shaders blend additively and can look bright. Halo 2 sky layers keep their own blending (alpha or additive).
+- An imported Halo: CE, Halo 2 or Halo 2: Anniversary map keeps its own sky: leave **Sapien Sky** on "Original map / default sky" and preparing converts the map's visible sky layers at their imported size, position and rotation. Hide a sky layer in Blender to leave it out.
 - Halo: CE colours its clouds with shader tints that aren't converted, so its clouds look grey.
 - Only the sky's geometry and its base, normal and alpha textures are converted. Fog, atmosphere settings, moving clouds and other animated effects aren't.
 - **Remove sky object** deletes the placed sky. If a sky chosen with an older version looks white, choose it again.

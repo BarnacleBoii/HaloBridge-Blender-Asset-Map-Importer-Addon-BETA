@@ -45,6 +45,7 @@ You do **not** need Reclaimer, Foundry, Osoyoos, or a manually exported asset li
 | **Import level from .scenario**, ODST | ⭕ textures | ➖ | ✅ H3ODSTEK | ✅ | ✅ | ✅ |
 | **Import level from .scenario**, Reach | ✅ geometry | ➖ | ✅ HREK | ✅ | ✅ | ✅ |
 | **Import level from .scenario**, Halo: CE / Halo 2 | ➖ | ➖ | ✅ HCEEK / H2EK | ✅ | ✅ | ➖ |
+| **Import campaign level** / **Index All Individual Assets** (Halo 2: Anniversary campaign) | ✅ `halo2\preload\paks` | ➖ | ➖ | ✅ | ✅ | ➖ |
 | Prepare a **Halo 3** Sapien level | ⭕ | ✅ | ⭕ for original collision | ✅ | ✅ | ✅ |
 | Prepare an **ODST** Sapien level | ⭕ | ➖ | ✅ H3ODSTEK | ✅ | ✅ | ✅ |
 
@@ -58,13 +59,15 @@ You do **not** need Reclaimer, Foundry, Osoyoos, or a manually exported asset li
 | --- | --- |
 | Halo: CE | `halo1\maps` |
 | Halo 2 | `halo2\h2_maps_win64_dx11` |
+| Halo 2: Anniversary (multiplayer) | `groundhog\maps` |
+| Halo 2: Anniversary (remastered campaign) | `halo2\preload\paks` (found automatically from `groundhog\maps`) |
 | Halo 3 | `halo3\maps` |
 | Halo 3: ODST | `halo3odst\maps` |
 | Halo: Reach | `haloreach\maps` |
 
 Keep each maps folder complete. Level maps load textures and objects from shared files (`shared.map`, `campaign.map` and others) in the same folder, so don't move one map on its own.
 
-**Mod Tools.** In your Steam Library, tick **Tools** in the library filter and install **Halo 3 Mod Tools - MCC** (folder `H3EK`). Install the other games' Mod Tools only if you need them (`H3ODSTEK`, `HREK`, `HCEEK`, `H2EK`). Mod Tools are separate from MCC and install to their own folder.
+**Mod Tools.** In your Steam Library, tick **Tools** in the library filter and install **Halo 3 Mod Tools - MCC** (folder `H3EK`). Install the other games' Mod Tools only if you need them (`H3ODSTEK`, `HREK`, `HCEEK`, `H2EK`; Halo 2: Anniversary needs no kit). Mod Tools are separate from MCC and install to their own folder.
 
 **Extract the tags.** Open the kit's folder (Steam → right-click the tool → Manage → Browse local files) and extract the tag and data archives it ships with, keeping their folder structure. When you're done, the kit folder should look like this:
 
@@ -73,7 +76,7 @@ H3EK\
   tool.exe
   sapien.exe
   bin\ManagedBlam.dll
-  tags\levels\multi\deadlock\deadlock.scenario   ← tags extracted correctly
+  tags\levels\multi\isolation\isolation.scenario   ← tags extracted correctly
   data\
 ```
 
@@ -136,13 +139,13 @@ Check setup checks the **full** workflow, including Sapien preparation. If you o
 
 HaloBridge never changes your MCC files or the original tags in your Editing Kit. It writes to two places.
 
-**1. Its storage folder** (cache, asset lists, project records). By default this is `HaloBridge` inside your Windows **Documents** folder. If OneDrive has moved your Documents folder, HaloBridge uses that location. If you already have `%USERPROFILE%\Documents\HaloBridge` from an earlier version, it keeps using it. Halo 3 uses the folder itself; other games use a subfolder (`odst`, `reach`, `halo1`, `halo2`).
+**1. Its storage folder** (cache, asset lists, project records). By default this is `HaloBridge` inside your Windows **Documents** folder. If OneDrive has moved your Documents folder, HaloBridge uses that location. If you already have `%USERPROFILE%\Documents\HaloBridge` from an earlier version, it keeps using it. Halo 3 uses the folder itself; other games use a subfolder (`odst`, `reach`, `halo1`, `halo2`, `h2a`).
 
 | Folder | Contents |
 | --- | --- |
 | `catalogue.json` | The asset list for that game |
 | `assets\` | Extracted meshes and textures, reused on later placements |
-| `map_scenes\`, `scenario_scenes\` | Whole-level imports |
+| `map_scenes\`, `scenario_scenes\` | Whole-level imports. For the Anniversary campaign, each level keeps only its small `scene.json` after import, and the textures are shared in `map_scenes\h2a_campaign_textures_<size>` (one folder per **Reduce Texture Size** choice). |
 | `kit_maps\` | Maps built by the Halo: CE / Halo 2 Tool for `.scenario` import |
 | `jobs\` | Logs from every helper and compiler run |
 | `projects\`, `backups\` | Records of what each preparation wrote, used for safe repeat builds and rollback |
@@ -154,7 +157,14 @@ The cache can grow to several GB. If OneDrive syncs your Documents folder, choos
 - `H3EK\tags\levels\multi\my_level\` — the scenario, BSP, shaders, bitmaps and sky tags
 - `H3EK\data\levels\multi\my_level\` — the exported source geometry
 
-Your saved `.blend` files can refer to textures in the cache. To move a project to another PC, either keep the cache with it or use **File → External Data → Pack Resources** in Blender first.
+Your saved `.blend` files can refer to textures in the cache. To move a project to another PC, either keep the cache with it or use **File → External Data → Pack Resources** in Blender first. Don't share `.blend` files that contain game content; see [Saving and sharing](H2A-CAMPAIGN.md#saving-and-sharing-blend-files).
+
+### Freeing disk space
+
+- **Anniversary campaign texture folders** (`h2a\map_scenes\h2a_campaign_textures_<size>`) for sizes you no longer use can be deleted, but only if no saved scene uses them.
+- **`assets\`** and **`map_scenes\`** can be deleted when you aren't working on scenes that use them; they're rebuilt when needed (scenes that use them show missing textures until you re-import).
+- **`jobs\`** holds logs only and can be emptied.
+- Keep **`projects\`** and **`backups\`** for levels you're still preparing: they're what lets HaloBridge safely overwrite and roll back its own levels. Each level keeps only the backup from its latest finished Prepare.
 
 ## Updating without losing work
 

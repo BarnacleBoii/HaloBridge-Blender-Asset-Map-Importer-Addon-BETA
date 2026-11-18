@@ -128,6 +128,255 @@ def make(context, mode):
     return mat
 
 
+# ---- Paintable terrain -------------------------------------------------------
+# Two editors share the "terrain" mode:
+#  * simple: made from a plain texture (layers Grass/Rock/Dirt/Layer 4, chosen by
+#    black/red/green/blue in the Paint Mask);
+#  * layered: made from a stock Halo terrain shader (layers "Shader N", see
+#    layered_preview; the Paint Mask overrides the shader's original blend map).
+# Both export as a real Halo 3 shader_terrain, never as one stretched bake.
+SIMPLE_LAYERS = ('Grass', 'Rock', 'Dirt', 'Layer 4')
+MAX_TERRAIN_LAYERS = 4  # Halo 3 shader_terrain has material_0 .. material_3.
+CHANNEL_INDEX = {1: 0, 2: 1, 4: 2, 8: 3}
+
+
+def is_paintable_terrain(mat):
+    """The simple editor (made from a plain material)."""
+    if not mat or mat.get('hb_custom_shader') != 'terrain' or mat.get('hb_layers') or not compat.nodes_enabled(mat):
+        return False
+    nodes = mat.node_tree.nodes
+    return bool(nodes.get('Paint Mask') and nodes.get('Grass') and nodes.get('Grass Tiling'))
+
+
+def is_layered_terrain(mat):
+    """The layered editor (made from a stock Halo terrain shader)."""
+    if not mat or mat.get('hb_custom_shader') != 'terrain' or not mat.get('hb_layers') or not compat.nodes_enabled(mat):
+        return False
+    nodes = mat.node_tree.nodes
+    return bool(nodes.get('Paint Mask') and nodes.get('Shader 1'))
+
+
+def exports_terrain_shader(mat):
+    return is_paintable_terrain(mat) or is_layered_terrain(mat)
+
+
+def _layer_names(mat):
+    if is_layered_terrain(mat):
+        return [n for n in json.loads(mat['hb_layers']) if mat.node_tree.nodes.get(n)]
+    return [n for n in SIMPLE_LAYERS if mat.node_tree.nodes.get(n)]
+
+
+def terrain_layer_count(mat):
+    return len(_layer_names(mat))
+
+
+def _layer_channels(mat):
+    """Original blend-map channel of each layered-editor layer (0 = added layer, no original weight)."""
+    names = json.loads(mat['hb_layers'])
+    stored = json.loads(mat.get('hb_layer_channels') or '[]')
+    return stored if len(stored) == len(names) else [1 << i for i in range(len(names))]
+
+
+def _copy_image_node(mat, source, name):
+    """A new image node using a copy of source's image and the same UV mapping."""
+    nodes = mat.node_tree.nodes; links = mat.node_tree.links
+    tiling = nodes.get(source.name + ' Tiling')
+    image = source.image.copy(); image.name = mat.name + ' ' + name
+    image.colorspace_settings.name = source.image.colorspace_settings.name; image.pack()
+    tex = nodes.new('ShaderNodeTexImage'); tex.name = name; tex.label = name; tex.image = image
+    mapping = nodes.new('ShaderNodeVectorMath'); mapping.operation = 'MULTIPLY'; mapping.name = name + ' Tiling'
+    mapping.inputs[1].default_value = tiling.inputs[1].default_value[:] if tiling else (1, 1, 1)
+    links.new(tiling.inputs[0].links[0].from_socket if tiling else source.inputs['Vector'].links[0].from_socket, mapping.inputs[0])
+    links.new(mapping.outputs[0], tex.inputs['Vector'])
+    return tex
+
+
+def _mix(mat, blend, factor, a, b):
+    nodes = mat.node_tree.nodes; links = mat.node_tree.links
+    node = nodes.new('ShaderNodeMixRGB'); node.blend_type = blend
+    for socket, value in ((node.inputs[0], factor), (node.inputs[1], a), (node.inputs[2], b)):
+        if isinstance(value, (int, float)): socket.default_value = value
+        elif isinstance(value, tuple): socket.default_value = value
+        else: links.new(value, socket)
+    return node.outputs[0]
+
+
+def _insert_after(mat, socket, make):
+    """Replace what feeds socket with make(previous_output)."""
+    previous = socket.links[0].from_socket
+    mat.node_tree.links.new(make(previous), socket)
+
+
+def _add_simple_layer(mat):
+    nodes = mat.node_tree.nodes
+    bsdf = next((n for n in nodes if n.type == 'BSDF_PRINCIPLED'), None)
+    channels = next((l.to_node for l in nodes['Paint Mask'].outputs['Color'].links if l.to_node.type == 'SEPARATE_COLOR'), None)
+    if not bsdf or not channels or not bsdf.inputs['Base Color'].is_linked:
+        raise ValueError('This terrain material was changed by hand. Create the paintable terrain again.')
+    blue = channels.outputs[2]
+    tex = _copy_image_node(mat, nodes['Grass'], 'Layer 4')
+    _insert_after(mat, bsdf.inputs['Base Color'], lambda prev: _mix(mat, 'MIX', blue, prev, tex.outputs['Color']))
+    normal_map = next((n for n in nodes if n.type == 'NORMAL_MAP'), None)
+    if nodes.get('Grass Normal') and normal_map and normal_map.inputs['Color'].is_linked:
+        normal = _copy_image_node(mat, nodes['Grass Normal'], 'Layer 4 Normal')
+        _insert_after(mat, normal_map.inputs['Color'], lambda prev: _mix(mat, 'MIX', blue, prev, normal.outputs['Color']))
+    return tex
+
+
+def _add_layered_layer(mat):
+    """Next "Shader N" in the layered editor, shown where the mask is painted white."""
+    nodes = mat.node_tree.nodes
+    names = json.loads(mat['hb_layers'])
+    bsdf = next((n for n in nodes if n.type == 'BSDF_PRINCIPLED'), None)
+    divides = [n for n in nodes if n.type == 'MATH' and n.operation == 'DIVIDE' and n.inputs[1].is_linked]
+    try:
+        total = divides[0].inputs[1].links[0].from_node
+        fourth = total.inputs[1].links[0].from_node.inputs[1].links[0].from_socket  # min(r, g, b): white
+        weight = next(l.to_node for l in divides[0].outputs[0].links if l.to_node.type == 'MIX_RGB')
+        strength = weight.inputs[0].links[0].from_socket
+    except (IndexError, StopIteration):
+        raise ValueError('This terrain material was changed by hand. Create the paintable terrain again.')
+    if not bsdf or not bsdf.inputs['Base Color'].is_linked:
+        raise ValueError('This terrain material was changed by hand. Create the paintable terrain again.')
+    links = mat.node_tree.links
+    share = nodes.new('ShaderNodeMath'); share.operation = 'DIVIDE'
+    links.new(fourth, share.inputs[0]); links.new(total.outputs[0], share.inputs[1])
+    # New layer: no weight in the original blend, the painted share where painted.
+    layer_weight = _mix(mat, 'MIX', strength, (0, 0, 0, 1), share.outputs[0])
+    name = 'Shader ' + str(len(names) + 1)
+    tex = _copy_image_node(mat, nodes['Shader 1'], name)
+    weighted = _mix(mat, 'MULTIPLY', 1.0, tex.outputs['Color'], layer_weight)
+    _insert_after(mat, bsdf.inputs['Base Color'], lambda prev: _mix(mat, 'ADD', 1.0, prev, weighted))
+    normal_map = next((n for n in nodes if n.type == 'NORMAL_MAP'), None)
+    if nodes.get('Shader 1 Normal') and normal_map and normal_map.inputs['Color'].is_linked:
+        normal = _copy_image_node(mat, nodes['Shader 1 Normal'], name + ' Normal')
+        weighted_normal = _mix(mat, 'MULTIPLY', 1.0, normal.outputs['Color'], layer_weight)
+        _insert_after(mat, normal_map.inputs['Color'], lambda prev: _mix(mat, 'ADD', 1.0, prev, weighted_normal))
+    channels = _layer_channels(mat) + [0]
+    mat['hb_layers'] = json.dumps(names + [name]); mat['hb_layer_channels'] = json.dumps(channels)
+    return tex
+
+
+def add_terrain_layer(mat):
+    """Add one more layer (up to Halo's four); it starts as a copy of layer 1."""
+    if not exports_terrain_shader(mat):
+        raise ValueError('Select a paintable terrain material made with Create paintable terrain.')
+    if terrain_layer_count(mat) >= MAX_TERRAIN_LAYERS:
+        raise ValueError('Halo 3 terrain shaders have at most four layers, and this terrain already has four.')
+    tex = _add_layered_layer(mat) if is_layered_terrain(mat) else _add_simple_layer(mat)
+    for i, node in enumerate(mat.node_tree.nodes): node.location = ((i % 5) * 230, -(i // 5) * 220)
+    return tex
+
+
+def terrain_weights(mask_pixels, layers):
+    """Simple editor: blend weights per layer from the paint mask.
+
+    The preview mixes layer 2 over layer 1 by red, layer 3 over that by green and
+    layer 4 by blue, so each weight is that mix's share and they always sum to 1.
+    """
+    import numpy as np
+    r, g, b = (np.clip(mask_pixels[:, :, i], 0, 1) for i in range(3))
+    if layers < 4: b = np.zeros_like(b)
+    if layers < 3: g = np.zeros_like(g)
+    weights = np.zeros(mask_pixels.shape[:2] + (4,), dtype=np.float32)
+    weights[:, :, 0] = (1 - r) * (1 - g) * (1 - b)
+    weights[:, :, 1] = r * (1 - g) * (1 - b)
+    weights[:, :, 2] = g * (1 - b)
+    weights[:, :, 3] = b
+    return weights
+
+
+def layered_weights(paint, original, channels):
+    """Layered editor: the preview's weights (layered_preview.apply) per layer.
+
+    paint and original are float arrays sampled on the same grid. Where the mask is
+    black the original blend shows; painted red/green/blue/white select layers 1-4.
+    """
+    import numpy as np
+    r, g, b = (np.clip(paint[:, :, i], 0, 1) for i in range(3))
+    strength = np.maximum(np.maximum(r, g), b)
+    fourth = np.minimum(np.minimum(r, g), b)
+    shares = [r - fourth, g - fourth, b - fourth, fourth]
+    total = shares[0] + shares[1] + shares[2] + shares[3]
+    weights = np.zeros(paint.shape[:2] + (4,), dtype=np.float32)
+    for index, channel in enumerate(channels[:4]):
+        painted = np.divide(shares[index], total, out=np.zeros_like(total), where=total > 0)
+        base = original[:, :, CHANNEL_INDEX[channel]] if channel in CHANNEL_INDEX else 0
+        weights[:, :, index] = base * (1 - strength) + painted * strength
+    return weights
+
+
+def uv_transform(mat, node):
+    """(scale, offset) with texture coordinate = UV * scale + offset, as Halo's xform."""
+    nodes = mat.node_tree.nodes
+    tiling = nodes.get(node.name + ' Tiling')
+    if not tiling:
+        return (1., 1.), (0., 0.)
+    tile = tuple(float(v) for v in tiling.inputs[1].default_value[:2])
+    source = tiling.inputs[0].links[0].from_node if tiling.inputs[0].is_linked else None
+    # make() remaps UVs outside 0-1 as ((uv * span) + low) before the tiling.
+    if source is not None and source.type == 'VECT_MATH' and source.operation == 'ADD' and source.inputs[0].is_linked:
+        low = tuple(float(v) for v in source.inputs[1].default_value[:2])
+        span = tuple(float(v) for v in source.inputs[0].links[0].from_node.inputs[1].default_value[:2])
+        return (span[0] * tile[0], span[1] * tile[1]), (low[0] * tile[0], low[1] * tile[1])
+    return tile, (0., 0.)
+
+
+def _sample(data, width, height, scale, offset):
+    """Nearest-pixel sample of data over a width x height UV grid, repeating like Blender."""
+    import numpy as np
+    u = ((np.arange(width) + .5) / width) * scale[0] + offset[0]
+    v = ((np.arange(height) + .5) / height) * scale[1] + offset[1]
+    x = np.floor(u * data.shape[1]).astype(int) % data.shape[1]
+    y = np.floor(v * data.shape[0]).astype(int) % data.shape[0]
+    return data[y[:, None], x[None, :]]
+
+
+def terrain_shader(mat, folder, progress=None):
+    """Paintable terrain as a real Halo 3 shader_terrain.
+
+    Each layer keeps its own full-resolution texture and tiling; only the painted
+    mask becomes the (untiled) blend map. Baking everything into one image would
+    stretch a single texture over the whole terrain.
+    """
+    validate(mat); pack(mat); folder = Path(folder); folder.mkdir(parents=True, exist_ok=True)
+    nodes = mat.node_tree.nodes
+    name = 'terrain_' + mat['hb_custom_id'][:20]
+    names = _layer_names(mat)
+    if progress: progress('Writing terrain blend map for ' + mat.name)
+    paint_node = nodes['Paint Mask']; paint = cross_game.pixels(paint_node.image)
+    if is_layered_terrain(mat):
+        original = nodes.get('Original Blend')
+        data = cross_game.pixels(original.image) if original and original.image else None
+        height = min(4096, max(paint.shape[0], data.shape[0] if data is not None else 0))
+        width = min(4096, max(paint.shape[1], data.shape[1] if data is not None else 0))
+        painted = _sample(paint, width, height, *uv_transform(mat, paint_node))
+        base = _sample(data, width, height, *uv_transform(mat, original)) if data is not None else __import__('numpy').zeros_like(painted)
+        weights = layered_weights(painted, base, _layer_channels(mat))
+    else:
+        weights = terrain_weights(paint, len(names))
+    blend = folder / (name + '_blend.tif')
+    cross_game.save_pixels(weights, blend)
+    layers = []
+    for index, layer in enumerate(names):
+        if progress: progress('Writing terrain layer ' + str(index + 1) + ' for ' + mat.name)
+        entry = {}
+        for suffix, usage in (('', 'base_map'), (' Detail', 'detail_map'), (' Normal', 'normal_map')):
+            node = nodes.get(layer + suffix)
+            if not node or not node.image:
+                if usage == 'base_map': raise ValueError('Choose an image for terrain layer ' + str(index + 1) + '.')
+                continue
+            path = folder / (name + '_m' + str(index) + '_' + usage.split('_')[0] + '.tif')
+            cross_game.write_image(node.image, path)
+            scale, offset = uv_transform(mat, node)
+            entry[usage] = str(path)
+            entry[usage.split('_')[0] + '_scale'] = [scale[0], scale[1]]
+            entry[usage.split('_')[0] + '_offset'] = [offset[0], offset[1]]
+        entry['scale'] = entry['base_scale']
+        layers.append(entry)
+    return dict(name=name, tiling=(1., 1.), maps={'blend_map': str(blend)}, terrain=True, layers=layers)
+
+
 def validate(mat):
     if not compat.nodes_enabled(mat):raise ValueError('Enable material nodes for the editable material.')
     allowed={'BSDF_PRINCIPLED','OUTPUT_MATERIAL','TEX_COORD','TEX_IMAGE','VECT_MATH','MIX_RGB','SEPARATE_COLOR','NORMAL_MAP','RGB','VALUE','MATH','UVMAP','REROUTE'}

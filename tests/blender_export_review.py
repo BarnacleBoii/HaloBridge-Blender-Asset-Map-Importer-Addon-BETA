@@ -45,6 +45,37 @@ with tempfile.TemporaryDirectory() as tmp:
         geometry_export.export(cfg,Path(tmp)/'export.ASS')
     assert floor.name in bpy.context.scene.objects and bad.name in bpy.context.scene.objects
     assert list(floor.data.materials)==[good,unused]
+    # An object that fails while it is converted is skipped too, instead of stopping the build.
+    broken=triangle('Broken piece',good);bpy.context.view_layer.update()
+    real=geometry_export.simple_collision
+    def fails(obj):
+        if obj.name=='Broken piece':raise RuntimeError('fixture conversion failure')
+        return real(obj)
+    def capture_broken(config,path):
+        assert set(config['geometry_names'].values())=={'Valid terrain'},config['geometry_names']
+        assert 'fixture conversion failure' in config['skipped_objects']['Broken piece'][0]
+        assert 'Broken piece' not in config['collision_routes']
+        return []
+    with patch.object(blender_ops,'ensure_exporter'),patch.object(blender_ops,'export_scene',side_effect=capture_broken),patch.object(geometry_export,'simple_collision',side_effect=fails):
+        geometry_export.export(cfg,Path(tmp)/'export.ASS')
+        try:geometry_export.export(dict(cfg,skip_invalid=False),Path(tmp)/'export.ASS')
+        except Exception as e:assert 'fixture conversion failure' in str(e) or 'Unassigned plane' in str(e),e
+        else:raise AssertionError('Conversion failure ignored without skipping')
+    bpy.data.objects.remove(broken,do_unlink=True)
+    # Objects Tool rejects are remembered and left out until they change.
+    error=ValidationError(["-ERROR- (object Valid terrain) section 'global' has too many vertices (count=36964, max=32767)",
+                           '-FATAL- (object Valid terrain) FATAL ERROR!  Instance had fatal error! (fix pervious error in tool output)',
+                           '-FATAL- FATAL ERROR!  Import failed because 1 or more instanced had a critical error'])
+    assert ui.mark_tool_rejections(error)==[floor] and 'too many vertices' in floor['hb_tool_rejected']
+    assert ui.tool_rejected(bpy.context.scene)==[floor]
+    issues,_,_=export_review.inspect([floor],cfg)
+    assert 'rejected' in issues[floor.name][0],issues
+    floor.data.vertices.add(1);floor.data.update();bpy.context.view_layer.update()
+    issues,_,_=export_review.inspect([floor],cfg)
+    assert floor.name not in issues,issues  # changed: tried again
+    ui.HBRetryRejected.run(None,bpy.context)
+    assert not ui.tool_rejected(bpy.context.scene)
+    assert ui.mark_tool_rejections(ValidationError(['-ERROR- structure import pipeline failed']))==[]
     s=bpy.context.scene.halo_bridge;s.kit=tmp
     assert shader_choices.scan(tmp)==1
     s.shader_choice='terrain';bpy.context.view_layer.objects.active=bad

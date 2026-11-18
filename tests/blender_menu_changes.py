@@ -58,6 +58,27 @@ for screen in bpy.data.screens:
             assert area.spaces.active.clip_end == 999999.0 and abs(area.spaces.active.clip_start - 0.1) < 1e-6
 assert dict((k, label) for k, label, _ in games.IMPORT_ITEMS)['reach'] == 'Halo: Reach'
 
+# Detail previews: Halo's x2 detail multiply is 2^2.2 in Blender's linear colour; old x2 materials brighten.
+from halo_bridge import regular_preview
+old = bpy.data.materials.new('old detail'); compat.enable_nodes(old); old['hb_regular_preview'] = 'default'
+gain = old.node_tree.nodes.new('ShaderNodeVectorMath'); gain.operation = 'SCALE'; gain.inputs['Scale'].default_value = 2
+assert regular_preview.refresh_gain(old) and abs(gain.inputs['Scale'].default_value - 2 ** 2.2) < 1e-4
+assert not regular_preview.refresh_gain(old), 'already refreshed'
+two = bpy.data.materials.new('old two detail'); compat.enable_nodes(two); two['hb_regular_preview'] = 'two_detail'
+g2 = two.node_tree.nodes.new('ShaderNodeVectorMath'); g2.operation = 'SCALE'; g2.inputs['Scale'].default_value = 4
+assert regular_preview.refresh_gain(two) and abs(g2.inputs['Scale'].default_value - 2 ** 4.4) < 1e-3
+
+# Viewport Shadows: whole-level imports switch EEVEE shadows off; the button toggles them.
+scene = bpy.context.scene
+if compat.has_eevee_shadow_switch(scene):
+    scene.eevee.use_shadows = True
+    assert ui.faster_level_viewport(bpy.context) and not scene.eevee.use_shadows
+    assert not ui.faster_level_viewport(bpy.context), 'already off: no second note'
+    assert bpy.ops.halo_bridge.viewport_shadows() == {'FINISHED'} and scene.eevee.use_shadows
+    assert bpy.ops.halo_bridge.viewport_shadows() == {'FINISHED'} and not scene.eevee.use_shadows
+else:
+    assert not ui.faster_level_viewport(bpy.context)
+
 # Games: ODST imports, indexes scenarios and prepares; Reach imports scenarios but cannot prepare.
 assert games.GAMES['odst']['import_enabled'] and games.GAMES['odst']['sapien_enabled'] and games.GAMES['odst']['scenario_enabled']
 assert games.GAMES['reach']['scenario_enabled'] and not games.GAMES['reach']['sapien_enabled']

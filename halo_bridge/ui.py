@@ -9,11 +9,11 @@ import traceback
 from pathlib import Path
 import bpy
 from bpy.app.handlers import persistent
-from bpy.props import StringProperty, BoolProperty, IntProperty, CollectionProperty, PointerProperty, EnumProperty
+from bpy.props import StringProperty, BoolProperty, IntProperty, FloatProperty, CollectionProperty, PointerProperty, EnumProperty
 from .catalog import detect_paths,default_storage,read_json,write_json,scan_library,merge_assets,indexed_assets,safe_level
 from . import jobs, build, blender_ops, setup, map_scene, navigation, map_export, skies, geometry_export
 from .diagnostics import ValidationError
-from . import source_names,export_review,shader_choices,vehicles,invisible_blocks,model_parts,editable_materials
+from . import source_names,export_review,shader_choices,vehicles,invisible_blocks,model_parts,editable_materials,standins
 from .progress import PreparationActivity
 from . import games, compat, scenario_scene, original_scenery, classic_scenario, sky_export
 
@@ -163,9 +163,12 @@ def game_changed(settings,context):
     profiles=json.loads(settings.game_profiles or '{}')
     keys=('kit','maps','cache','map_name','scenario_path')
     profiles[settings.previous_game]={k:getattr(settings,k) for k in keys}
+    # A blank storage folder would resolve against Blender's own folder.
+    if not profiles[settings.previous_game]['cache']:profiles[settings.previous_game]['cache']=str(default_storage(settings.previous_game or 'halo3'))
     game=games.GAMES[settings.game]
-    chosen=profiles.get(settings.game) or dict(detect_paths(settings.game),map_name=game['map_name'],scenario_path=game.get('scenario',''))
-    for key in keys:setattr(settings,key,chosen.get(key) or (game.get('scenario','') if key=='scenario_path' else ''))
+    detected=dict(detect_paths(settings.game),map_name=game['map_name'],scenario_path=game.get('scenario',''))
+    chosen=profiles.get(settings.game) or detected
+    for key in keys:setattr(settings,key,chosen.get(key) or detected.get(key) or '')
     # Prepare for the game being imported when its Editing Kit supports Sapien.
     if game['sapien_enabled']:settings.export_target=settings.game
     settings.shader_choice='NONE';settings.shader_level='ALL';settings.game_profiles=json.dumps(profiles);settings.previous_game=settings.game
@@ -184,14 +187,38 @@ class HBSettings(bpy.types.PropertyGroup):
     cache:StringProperty(name='Project and cache folder',subtype='DIR_PATH',description='Stores automatically extracted assets, project records, backups, and job logs for reuse')
     scenario_path:StringProperty(name='Editing Kit scenario',default='levels\\multi\\guardian\\guardian',description='Scenario tag path relative to the Editing Kit tags folder, without .scenario. Use the adjacent dropdown to search the kit')
     map_name:StringProperty(name='Choose .map file',default='010_jungle.map',description='Type a map filename, or use the adjacent dropdown to search maps in the selected game folder')
+    h2a_campaign_level:StringProperty(name='Campaign level',default='01a_tutorial.pck',description='Halo 2: Anniversary campaign level (.pck in MCC\'s halo2\\preload\\paks). Type a filename, or use the adjacent dropdown')
     level:StringProperty(name='Output Level Name (without .map)',default=LEVEL_PLACEHOLDER,description='Name for your generated level: 3–32 lowercase letters, digits, or underscores, starting with a letter. Give each level its own name')
     export_target:EnumProperty(name='Export to Sapien',items=games.SAPIEN_ITEMS,default='halo3')
-    skip_invalid:BoolProperty(name='Skip objects with export problems',default=False,description='After review, omit entire objects with detected mesh or material problems. Objects stay in Blender. Compiler errors still stop the build')
+    decimate_dense:BoolProperty(name='Decimate very dense objects',default=False,description='When preparing, add a Decimate modifier to every exported object over the triangle limit. The modifier stays on the object: change its Ratio per object in Modifier Properties, or remove it to restore the full mesh')
+    water_shader:EnumProperty(name='Water',default=standins.DEFAULT_WATER,items=[(key,label,('Halo 3 water: '+path) if path else 'HaloBridge\'s conversion: dark still water with Halo 2\'s waves as its bump map') for key,label,path in standins.WATER_SHADERS],description='Halo 3 water shader used for Halo 2 water (pools, rivers). Halo 2 water draws its color from a reflection cube map that does not convert')
+    effect_standins:BoolProperty(name='Halo 3 energy and glass',default=True,description='Halo 2 plasma fields (teleporters, grav lifts) and reflective glass use Halo 3 shaders that draw the same animated or see-through effect. Off: they are converted from their textures, which come out white or grey')
+    max_texture_size:EnumProperty(name='Texture size',default='2048',items=(('512','512','Textures at most 512 pixels wide: the least storage and memory, visibly softer',3),('1024','1024','Converted textures at most 1024 pixels wide: most Halo 3 textures',0),('2048','2048','Converted textures at most 2048 pixels wide: Halo 3\'s largest textures (default)',1),('4096','4096','Converted textures at most 4096 pixels wide: the most Halo 3 Tool accepts; much more memory',2)),description='Largest size for textures converted from other games (Reach, Halo 2: Anniversary and others have 4K and 8K textures). Larger ones are scaled down')
+    decimate_ratio:FloatProperty(name='Ratio',default=.5,min=.05,max=1,precision=2,description='Decimate ratio for newly added modifiers (0.5 keeps about half the triangles). Objects that already have the modifier keep their own ratio')
+    decimate_threshold:IntProperty(name='Over',default=30000,min=1000,max=10000000,description='Objects with more triangles than this get the Decimate modifier')
+    portal_spacing:FloatProperty(name='Every',default=40.0,min=2.0,max=2000.0,precision=1,description='Distance between +portal planes in Halo world units (Halo 3 multiplayer maps are about 50-200 units across)')
+    quick_test:BoolProperty(name='Quick test compile first',default=True,description='Before the full compile, compile only the densest objects on their own, so an object Halo Tool rejects is found in minutes instead of near the end of the full compile')
+    skip_invalid:BoolProperty(name='Skip objects with export problems',default=False,description='Leave out entire objects that have mesh or material problems, can\'t be converted, or that Halo Tool rejects (preparation then starts again without them). Objects stay in Blender')
     sky_choice:EnumProperty(name='(Experimental) Sky From Map',description='Choose the primary sky from any scanned Editing Kit map. Existing lightmaps and weather are not converted',items=skies.items)
     sky_selected:StringProperty(default='AUTO',description='Selected source scenario, stored independently of the scanned list')
     sky_game:EnumProperty(name='Sky game',items=skies.GAME_ITEMS,default='halo3',description='Game to take the Sapien sky from. A sky from the Sapien destination game uses its Editing Kit sky as-is; a sky from any other game is rebuilt as a converted sky object')
-    sky_scenario:StringProperty(name='Sky source scenario',default='levels\\multi\\deadlock\\deadlock',description='Existing Editing Kit scenario whose sky references are used; no .scenario extension. Whole-map imports fill this from their source. This does not copy terrain or gameplay')
+    sky_scenario:StringProperty(name='Sky source scenario',default='levels\\multi\\isolation\\isolation',description='Existing Editing Kit scenario whose sky references are used; no .scenario extension. Whole-map imports fill this from their source. This does not copy terrain or gameplay')
     lighting:BoolProperty(name='Generate Test Lighting for Sapien Level',default=True,description='Generate quick test lighting during Sapien preparation; turn off for faster geometry iterations')
+    lighting_baker:EnumProperty(name='Lighting bake',default='TOOL',description='What bakes the lighting when Generate Test Lighting is on',
+                                items=[('TOOL','Halo Tool (draft)','Tool\'s quick draft lighting on the processor: no bounced light, so shaded areas come out very dark'),
+                                       ('H3LM','H3LM (graphics card)','H3LM Lightmapper by Zoephie: Halo 3 lightmaps baked on the graphics card (DirectX 12), with bounced light. Download it separately and choose its folder')])
+    h3lm_path:StringProperty(name='H3LM folder',subtype='DIR_PATH',description='Folder with h3lm-lm.exe (the H3LM Lightmapper download, unzipped)')
+    h3lm_quality:EnumProperty(name='H3LM quality',default='optimized',description='H3LM bake quality. Low is a fast preview; Optimized is H3LM\'s recommended setting; Ultra is for a final bake and much slower',
+                              items=[('low','Low (preview)','Bungie\'s Tool "low" settings: fast preview'),('medium','Medium','Bungie\'s Tool "medium" settings'),
+                                     ('high','High','Bungie\'s Tool "high" settings'),('optimized','Optimized','H3LM\'s recommended quality, between High and Super'),
+                                     ('ultra','Ultra (final)','Bungie\'s Super settings doubled; much slower')])
+    h2_sun_strength:FloatProperty(name='Sun',default=1.0,min=0.0,soft_max=3.0,max=10.0,description='Halo 2 sky: strength of the original sun in the lighting bake (1 = HaloBridge\'s default). Takes effect when the level is prepared again')
+    h2_sky_strength:FloatProperty(name='Shade',default=1.0,min=0.0,soft_max=3.0,max=10.0,description='Halo 2 sky: strength of the light from the whole sky, which is what lights the shade and interiors (1 = HaloBridge\'s default). Raise it for lighter shadows, as in Halo 2. Takes effect when the level is prepared again')
+    h2_lightmaps:BoolProperty(name='Copy Halo 2\'s original lighting',default=True,description='Halo 2 maps imported from a Halo 2 Editing Kit .scenario: copy Halo 2\'s own baked lighting (light, shadows and colour) onto the terrain instead of baking new lighting. Halo 2\'s terrain is compiled as the level structure, as in Halo 2. Objects and other pieces get Tool\'s test lighting. Needs the Halo 2 Editing Kit the level was built from')
+    h2_lightmap_brightness:FloatProperty(name='Brightness',default=1.0,min=0.1,soft_max=3.0,max=10.0,description='Brightness of the copied Halo 2 lighting (1 = Halo 2\'s sunlit ground at the brightness of Bungie\'s Halo 3 multiplayer maps)')
+    show_tool_markers:BoolProperty(name='Show Tool warning markers in Sapien',default=False,description='Keep Halo Tool\'s warning reports (red "overlapping surfaces" text and lines) in the level so Sapien draws them. Off: they are cleared; the preparation report still lists every warning')
+    h3lm_per_pixel:BoolProperty(name='Per-pixel lighting for large pieces',default=True,description='H3LM bake: large pieces (terrain, buildings) are lit per pixel, which keeps sun shadows and avoids steps between pieces. Off: every piece keeps Tool\'s per-vertex lighting (light only at triangle corners), as Tool\'s own bake does')
+    h3lm_ao:BoolProperty(name='Ambient occlusion',default=False,description='Bake ambient occlusion into the lightmap (H3LM --ao)')
     open_sapien:BoolProperty(name='Open Sapien when ready',default=False,description='Launch the prepared scenario in Sapien automatically after a successful build')
     search:StringProperty(name='Search Assets',description='Filter assets as you type by name, source map, or asset type; applies within the active tab and enabled categories',options={'TEXTEDIT_UPDATE'},update=browsing_changed)
     filter_level_selected:StringProperty(default='',options={'HIDDEN'})
@@ -218,17 +245,27 @@ class HBSettings(bpy.types.PropertyGroup):
     setup:BoolProperty(name='Folders and Setup',default=True,description='Show or hide installation folders and map indexing controls')
     preview_previous_object:PointerProperty(type=bpy.types.Object)
     preview_object:PointerProperty(type=bpy.types.Object)
+    import_sky:BoolProperty(name='Import sky',default=True,description='Include the level\'s sky objects when importing a .scenario or an entire .map. Off: import the rest of the level without its sky; preparation then uses the Sapien Sky setting')
     advanced:BoolProperty(name='Advanced storage',default=False,description='Choose where cached assets and project records are stored; keep the existing folder when continuing a level')
 
 def config(context):
     s=context.scene.halo_bridge
     # Keep saved project locations; new scenes use managed storage automatically.
-    if not s.cache:s.cache=str(default_storage('halo3'))
+    if not s.cache:s.cache=str(default_storage(s.game or 'halo3'))
     result={n:getattr(s,n) for n in ('game','kit','maps','library','cache','level','lighting','sky_scenario')}
     for n in ('kit','maps','library','cache'):result[n]=bpy.path.abspath(result[n])
-    result['skip_invalid']=s.skip_invalid;result['export_target']=s.export_target
+    result['skip_invalid']=s.skip_invalid;result['quick_test']=s.quick_test;result['export_target']=s.export_target
+    result['lighting_baker']=s.lighting_baker;result['h3lm_path']=bpy.path.abspath(s.h3lm_path) if s.h3lm_path else ''
+    result['h3lm_quality']=s.h3lm_quality;result['h3lm_ao']=s.h3lm_ao
+    result['h2_sun_strength']=s.h2_sun_strength;result['h2_sky_strength']=s.h2_sky_strength
+    result['show_tool_markers']=s.show_tool_markers;result['h3lm_per_pixel']=s.h3lm_per_pixel
+    result['h2_lightmaps']=s.h2_lightmaps;result['h2_lightmap_brightness']=s.h2_lightmap_brightness
+    result['max_texture_size']=int(s.max_texture_size)
+    result['water_shader']=s.water_shader;result['effect_standins']=s.effect_standins
     if s.sky_selected!='AUTO':result['sky_scenario']=s.sky_selected
     elif s.sky_choice and s.sky_choice!='AUTO':result['sky_scenario']=s.sky_choice
+    # "Original map / default sky": an imported map's own sky is converted when its game differs.
+    result['sky_auto']=s.sky_selected=='AUTO' and (not s.sky_choice or s.sky_choice=='AUTO')
     return result
 
 def export_config(context):
@@ -379,34 +416,187 @@ class HBTask:
         self.thread=threading.Thread(target=run,daemon=True);self.thread.start()
 
 _box_retry=0
-COLLISION_ERRORS=r'\(object (.+?)\) (?:bad connections - \d+ ambiguous|degenerate collision edge|bad connections)'
+MAX_COLLISION_RETRIES=12
+COLLISION_ERRORS=r'\(object (.+?)\) (?:bad connections - \d+ ambiguous|degenerate collision edge|bad connections|collision geometry is too large|### ASSERTION FAILED:.*plane_builder)'
+# Tool crashes in its plane builder when it combines some objects' render and collision
+# (seen on Halo 2: Anniversary pieces placed more than once); a simpler collision avoids it.
+PLANE_BUILDER_CRASH=r'\(object (.+?)\) ### ASSERTION FAILED:.*plane_builder'
+
+def next_collision_fallback(current,had_original=True):
+    """Collision to try after Tool rejected an object's (original collision or its
+    plain mesh surfaces): its own surfaces cleaned for Tool, then a simple box as a
+    last resort, then none."""
+    if not current:return 'clean'
+    return {'clean':'box'}.get(current,'none')
+
+PORTAL_ATTEMPTS=3
+RETRY_SETTINGS=('hb_portal_attempt','hb_portals_failed','hb_cluster_scale')
+_retrying=False
+
+def _prepare_again():
+    """Prepare again after a Tool failure, keeping the retry settings (RETRY_SETTINGS) that a new
+    preparation started by the user clears."""
+    global _retrying
+    _retrying=True
+    try:bpy.ops.halo_bridge.prepare('EXEC_DEFAULT',warnings_accepted=True)
+    finally:_retrying=False
+
+def retry_with_shifted_portals(error):
+    """Tool could not build its leaf map from the automatic portal planes ("couldn't build leaf map
+    during portalization": Burial Mounds, Cyclotron, Zanzibar). Whether a set of cuts works depends
+    on the geometry they cross, so prepare again with the cuts moved (geometry_export reads the
+    attempt), up to PORTAL_ATTEMPTS times."""
+    text='\n'.join(str(i) for i in (getattr(error,'issues',None) or [str(error)]))
+    if 'leaf map during portalization' not in text:return False
+    scene=bpy.context.scene;attempt=int(scene.get('hb_portal_attempt',0))
+    if scene.get('hb_portals_failed'):
+        return False  # already compiling without portals
+    if attempt>=PORTAL_ATTEMPTS:
+        # Last resort: no portals; the structure is made to fit one cluster (geometry_export).
+        scene['hb_portal_attempt']=0;scene['hb_portals_failed']=True
+        prepare_status('Tool could not portalize this level; compiling it as one cluster with its biggest pieces instanced...')
+    else:
+        scene['hb_portal_attempt']=attempt+1
+        prepare_status('Tool could not use the automatic portal planes here; moving them and compiling again ('+str(attempt+1)+' of '+str(PORTAL_ATTEMPTS)+')...')
+    try:_prepare_again()
+    except Exception:return False
+    return _task is not None
+
+CLUSTER_SCALES=(0.6,0.35,0.2)
+
+def retry_with_smaller_clusters(error):
+    """Tool found a cluster with more than Halo 3's 32,767 vertices per section ("section 'cluster
+    0' has too many vertices": Warlock compiled as one cluster still had 34,208). Triangles are
+    only an estimate of Tool's vertices, so prepare again aiming for smaller clusters
+    (hb_cluster_scale, read by geometry_export), up to len(CLUSTER_SCALES) times."""
+    text='\n'.join(str(i) for i in (getattr(error,'issues',None) or [str(error)]))
+    if 'has too many vertices' not in text:return False
+    scene=bpy.context.scene;scale=float(scene.get('hb_cluster_scale',1.0))
+    smaller=[s for s in CLUSTER_SCALES if s<scale-1e-6]
+    if not smaller:return False
+    scene['hb_cluster_scale']=smaller[0]
+    prepare_status('A cluster had more vertices than Halo 3 allows; compiling again with smaller clusters ('+format(smaller[0],'.0%')+' of the usual size)...')
+    try:_prepare_again()
+    except Exception:return False
+    return _task is not None
 
 def retry_with_box_collision(error):
     """Tool rejected the collision of specific imported objects.
 
     Collision taken from another game (or its render mesh) can contain pieces
     Tool welds into ambiguous or degenerate edges. Step only those objects down:
-    original collision -> simple box -> render only (no collision), remembered
-    on the object as hb_collision_fallback, and compile again (up to 3 attempts).
+    original collision -> cleaned mesh surfaces -> simple box -> render only (no collision), remembered
+    on the object as hb_collision_fallback, and compile again. Tool stops at the
+    first rejected object, so for games without original collision every piece
+    of that game is cleaned in the same round.
     """
     global _box_retry
-    if _box_retry>=2:
+    if _box_retry>=MAX_COLLISION_RETRIES:
         _box_retry=0;return False
-    import re
-    text='\n'.join(str(i) for i in (getattr(error,'issues',None) or [str(error)]))
-    names={m.group(1) for m in re.finditer(COLLISION_ERRORS,text)}
-    objects=[o for name in names for o in [bpy.context.scene.objects.get(name)]
-             if o and o.get('hb_source_tag') and o.get('hb_collision_fallback')!='none' and getattr(o,'hb_static_collision','AUTO')=='AUTO']
-    if not objects or len(objects)!=len(names):
+    marked=mark_collision_fallbacks(error)
+    handled={o.name for o in marked[0]} if marked else set()
+    # With Skip objects with export problems on, any other object Tool rejects is left
+    # out of the next attempt instead of failing the build.
+    settings=getattr(bpy.context.scene,'halo_bridge',None)
+    skipped=mark_tool_rejections(error,handled) if settings and settings.skip_invalid else []
+    if not marked and not skipped:
         _box_retry=0;return False
-    for obj in objects:
-        obj['hb_collision_fallback']='box' if not obj.get('hb_collision_fallback') else 'none'
-    prepare_status('Tool rejected the collision of '+str(len(objects))+' object(s); recompiling with simpler collision for them: '+', '.join(o.name for o in objects[:5]))
+    if marked:
+        objects,others=marked
+        prepare_status('Tool rejected the collision of '+', '.join(o.name for o in objects[:5])+('; their surfaces, and those of '+str(len(others))+' other imported piece(s) from the same game, are cleaned for Tool' if others else '; recompiling with simpler collision')+'. Compiling again...')
+    if skipped:
+        prepare_status('Tool rejected '+', '.join(o.name+' ('+o['hb_tool_rejected']+')' for o in skipped[:5])+(' and '+str(len(skipped)-5)+' more' if len(skipped)>5 else '')
+                       +'. Skip objects with export problems is on, so '+('it is' if len(skipped)==1 else 'they are')+' left out. Preparing again...')
     _box_retry+=1
-    try:bpy.ops.halo_bridge.prepare('EXEC_DEFAULT',warnings_accepted=True)
+    try:_prepare_again()
     except Exception:
         _box_retry=0;return False
     return _task is not None
+
+def mark_tool_rejections(error,handled=()):
+    """Remember the objects Tool stopped on, so the next preparation skips them (until they
+    change). Returns those objects; [] when the error names no object in this scene."""
+    import re
+    from .export_review import shape
+    text='\n'.join(str(i) for i in (getattr(error,'issues',None) or [str(error)]))
+    fatal=set();reasons={}
+    for match in re.finditer(r'\(object (.+?)\) ([^\n]+)',text):
+        name,message=match.group(1),match.group(2).strip()
+        if 'Instance had fatal error' in message:fatal.add(name)
+        elif 'ASSERTION FAILED' in message:
+            # Tool crashed while building this object (the whole compile stops).
+            fatal.add(name);reasons[name]='Halo Tool crashed while building it: '+message.split(' at ')[-1].split('\\')[-1]
+        elif 'FATAL ERROR' not in message:reasons.setdefault(name,message)
+    targets=(fatal or set(reasons))-set(handled)
+    objects=[o for o in (bpy.context.scene.objects.get(name) for name in sorted(targets)) if o and o.type=='MESH']
+    depsgraph=bpy.context.evaluated_depsgraph_get()
+    for obj in objects:
+        evaluated=obj.evaluated_get(depsgraph);mesh=evaluated.to_mesh(preserve_all_data_layers=True,depsgraph=depsgraph)
+        try:obj['hb_tool_rejected_shape']=shape(mesh)
+        finally:evaluated.to_mesh_clear()
+        obj['hb_tool_rejected']=reasons.get(obj.name,'Tool stopped on this object')
+    return objects
+
+def tool_rejected(scene):
+    return [o for o in scene.objects if o.get('hb_tool_rejected')]
+
+def mark_collision_fallbacks(error):
+    """Step the collision of the objects Tool rejected (and their same-game siblings) down
+    one level. Returns (rejected objects, siblings), or None when the error isn't one of these."""
+    import re
+    text='\n'.join(str(i) for i in (getattr(error,'issues',None) or [str(error)]))
+    names={m.group(1) for m in re.finditer(COLLISION_ERRORS,text)}
+    if not names and re.search(r'-ERROR- (?:degenerate collision edge|bad connections)|ASSERTION FAILED:.*plane_builder',text):
+        # The error is in the level structure itself (Halo 2 terrain compiled as one structure;
+        # Containment: "degenerate collision edge"), which Tool doesn't name: step every imported
+        # structure piece's collision down together - cleaned surfaces, then welded harder.
+        from .geometry_export import CLEAN_DISTANCE,H2_STRUCTURE_COLLECTIONS
+        pieces=[o for o in bpy.context.scene.objects if o.type=='MESH' and o.get('hb_map_reference') and getattr(o,'hb_static_collision','AUTO')=='AUTO'
+                and any(c.name.split('.')[0] in H2_STRUCTURE_COLLECTIONS for c in o.users_collection)]
+        if not pieces:return None
+        changed=[]
+        for obj in pieces:
+            weld=float(obj.get('hb_collision_weld',CLEAN_DISTANCE))
+            if obj.get('hb_collision_fallback') is None:obj['hb_collision_fallback']='clean';changed.append(obj)
+            elif obj.get('hb_collision_fallback')=='clean' and weld<CLEAN_DISTANCE*16:obj['hb_collision_weld']=weld*4;changed.append(obj)
+        return (changed,[]) if changed else None
+    objects=[o for name in names for o in [bpy.context.scene.objects.get(name)]
+             if o and o.get('hb_source_tag') and o.get('hb_collision_fallback')!='none' and getattr(o,'hb_static_collision','AUTO')=='AUTO']
+    if not objects or len(objects)!=len(names):return None
+    from .original_collision import COLLISION_GAMES
+    from .geometry_export import COLLISION_TRIANGLE_LIMIT
+    too_large={m.group(1) for m in re.finditer(r'\(object (.+?)\) collision geometry is too large',text)}
+    crashed={m.group(1) for m in re.finditer(PLANE_BUILDER_CRASH,text)}
+    from .geometry_export import CLEAN_DISTANCE
+    for obj in objects:
+        if obj.name in crashed:
+            # Welding more rarely helps a crash: cleaned surfaces, then a box, then none.
+            obj['hb_collision_fallback']=next_collision_fallback(obj.get('hb_collision_fallback'))
+            continue
+        limit=int(obj.get('hb_collision_triangles',COLLISION_TRIANGLE_LIMIT))
+        if obj.name in too_large and obj.get('hb_collision_fallback') in (None,'clean') and limit>2500:
+            # Already simplified automatically (or cleaned) and still too dense for Tool:
+            # simplify further rather than falling back to a box.
+            obj['hb_collision_fallback']='clean';obj['hb_collision_triangles']=limit//2
+            continue
+        weld=float(obj.get('hb_collision_weld',CLEAN_DISTANCE))
+        if obj.get('hb_collision_fallback')=='clean' and weld<CLEAN_DISTANCE*16:
+            # Cleaned surfaces still had broken edges: weld more before trying a box.
+            obj['hb_collision_weld']=weld*4
+            continue
+        obj['hb_collision_fallback']=next_collision_fallback(obj.get('hb_collision_fallback'),obj.get('hb_game','halo3') in COLLISION_GAMES)
+    # Tool names only the first rejected object per compile. Pieces from games without
+    # original collision (Halo CE, Halo 2, Halo 2: Anniversary) tend to share the
+    # problem, so all of that game's imported pieces get cleaned surfaces in this round.
+    # (Only for broken edges; one oversized piece says nothing about the others.)
+    games_hit={o.get('hb_game','halo3') for o in objects if o.name not in too_large|crashed}-set(COLLISION_GAMES)
+    def exported(o):  # imported map pieces are flagged hb_ignore but still exported
+        return o.get('hb_map_reference') or not o.get('hb_ignore')
+    others=[o for o in bpy.context.scene.objects if o.type=='MESH' and o.get('hb_source_tag') and exported(o)
+            and not o.get('hb_collision_fallback') and o.get('hb_game','halo3') in games_hit
+            and getattr(o,'hb_static_collision','AUTO')=='AUTO']
+    for obj in others:obj['hb_collision_fallback']='clean'
+    return objects,others
 
 def start(context,fn,done,message,undo=False):
     global _task,_message,_error
@@ -448,7 +638,7 @@ def poll():
                 return .01
         except StopIteration:pass
         except Exception as e:
-            if getattr(task,'is_prepare',False) and retry_with_box_collision(e):
+            if getattr(task,'is_prepare',False) and (retry_with_shifted_portals(e) or retry_with_smaller_clusters(e) or retry_with_box_collision(e)):
                 return .2 if _task else None
             if getattr(task,'is_prepare',False):prepare_status(('Preparation cancelled.' if isinstance(e,jobs.Cancelled) else 'Preparation failed: '+(str(e).strip() or type(e).__name__).splitlines()[0]))
             if hasattr(task,'application'):task.application.close()
@@ -596,6 +786,32 @@ class HBIndex(Guard,bpy.types.Operator):
                 report.clear();report.write('\n'.join(result['warnings']))
                 _message+=f" {len(result['warnings'])} omissions; see HaloBridge index report in the Text Editor."
         start(context,lambda cancel:jobs.helper('extractor',dict(operation='index',game=cfg['game'],map=str(mp),output=str(out)),Path(cfg['cache'])/'jobs',cancel),done,'Reading map asset index…')
+
+
+class HBIndexH2ACampaign(Guard,bpy.types.Operator):
+    bl_idname='halo_bridge.index_h2a_campaign';bl_label='Index All Individual Assets'
+    bl_description=('List every Halo 2: Anniversary campaign prop, weapon, character and vehicle model (1,000+) and texture '
+                    'material (2,000+) in the Indexed Asset List. Each is extracted and cached the first time it is '
+                    'previewed or placed. Models are static: skinned ones come in their rest pose without animation')
+    def run(self,context):
+        cfg=config(context)
+        base=read_json(Path(cfg['cache'])/'catalogue.json',{'version':1,'assets':[]})
+        out=Path(cfg['cache'])/'indexes'/'h2a_campaign.json';out.parent.mkdir(parents=True,exist_ok=True)
+        def done(result):
+            global _catalogue,_message
+            before=list_snapshot(context);before['data']=copy.deepcopy(base);before['path']=str((Path(cfg['cache'])/'catalogue.json').resolve())
+            assets=indexed_assets(result)
+            for asset in assets:
+                asset['source']='h2a_campaign';asset['level']='H2A campaign'
+                if asset.get('note'):asset['status']=asset['note']
+            _catalogue=merge_assets(base,assets);refresh(context);remember_list(context,before)
+            models=sum(1 for a in assets if a['kind']=='model')
+            _message=f"Indexed {models} Anniversary campaign models and {len(assets)-models} materials."
+            if result.get('warnings'):
+                report=bpy.data.texts.get('HaloBridge index report') or bpy.data.texts.new('HaloBridge index report')
+                report.clear();report.write('\n'.join(result['warnings']))
+                _message+=f" {len(result['warnings'])} omissions; see HaloBridge index report in the Text Editor."
+        start(context,lambda cancel:jobs.index_h2a_campaign(cfg,out,cancel),done,'Indexing Anniversary campaign assets (about a minute and a half)…')
 
 def replacement_target(context,asset):
     targets=[o for o in context.selected_objects if not o.get('hb_preview')]
@@ -907,17 +1123,66 @@ class HBImportMapScene(Guard,bpy.types.Operator):
         _task.application_budget=.05
 
 
+_campaign_items=[]
+_campaign_retired=[]
+
+
+class HBChooseCampaignLevel(bpy.types.Operator):
+    bl_idname='halo_bridge.choose_campaign_level';bl_label='Choose campaign level'
+    bl_description='Search the Halo 2: Anniversary campaign levels installed with MCC; choosing one fills the filename without importing'
+    bl_property='choice'
+    choice:EnumProperty(items=lambda self,context:_campaign_items)
+    @classmethod
+    def poll(cls,context):return _task is None
+    def invoke(self,context,event):
+        global _campaign_items
+        names=jobs.h2a_campaign_levels(bpy.path.abspath(context.scene.halo_bridge.maps))
+        if not names:
+            self.report({'WARNING'},'No campaign levels found. Select MCC\'s groundhog maps folder; the campaign is in halo2\\preload\\paks of the same install.')
+            return {'CANCELLED'}
+        _campaign_retired.append(_campaign_items)
+        _campaign_items=[(name,name,'Use '+name,index) for index,name in enumerate(names)]
+        context.window_manager.invoke_search_popup(self)
+        return {'RUNNING_MODAL'}
+    def execute(self,context):
+        if self.choice not in {item[0] for item in _campaign_items}:return {'CANCELLED'}
+        context.scene.halo_bridge.h2a_campaign_level=self.choice
+        return {'FINISHED'}
+
+
+class HBImportH2ACampaign(Guard,bpy.types.Operator):
+    bl_idname='halo_bridge.import_h2a_campaign';bl_label='Import campaign level'
+    bl_description=('Import a Halo 2: Anniversary campaign level\'s remastered geometry and textures (Saber3D .pck), '
+                    'placed in classic Halo 2 world coordinates. Prepare converts its materials to Halo 3 shaders and '
+                    'generates collision; AI, weapons, vehicles and scripts are not imported')
+    def run(self,context):
+        cfg=config(context);name=context.scene.halo_bridge.h2a_campaign_level
+        stop_preview(context)
+        start(context,lambda cancel:jobs.extract_h2a_campaign_scene(cfg,name,cancel,set_message),
+              lambda manifest:finish_map_scene(context,manifest,source='Anniversary campaign'),'Reading Anniversary campaign level…')
+        _task.application_budget=.05
+
+
 def set_message(message):
     global _message
     _message=message
+
+
+SHADOWS_OFF_NOTE=' EEVEE shadows were turned off for a faster viewport (Folders and Setup > Viewport Shadows).'
+
+def faster_level_viewport(context):
+    """After a whole-level import: turn off EEVEE shadows, which overflow on Halo-sized levels."""
+    return compat.set_eevee_shadows(context.scene,False)
 
 
 def finish_map_scene(context,manifest,source='Original map layout'):
     """Create the objects of an extracted map scene and write its report (a generator)."""
     global _message
     data=read_json(manifest)
-    yield from map_scene.import_scene(context,manifest,set_message)
-    if games.GAMES[context.scene.halo_bridge.game].get('sapien_enabled'):context.scene.halo_bridge.sky_scenario=data['scenario']
+    yield from map_scene.import_scene(context,manifest,set_message,skies=context.scene.halo_bridge.import_sky)
+    freed=jobs.discard_h2a_campaign_meshes(manifest) if source=='Anniversary campaign' else 0
+    # Without "Import sky" the level's own sky isn't used; Sapien Sky decides (default sky).
+    if games.GAMES[context.scene.halo_bridge.game].get('sapien_enabled') and context.scene.halo_bridge.import_sky:context.scene.halo_bridge.sky_scenario=data['scenario']
     warnings=data.get('warnings',[])
     report=source+': '+data['scenario']+'\n\n'
     report+='Terrain BSPs: '+str(data['decoded_bsps'])+'/'+str(data['expected_bsps'])+'\n'
@@ -925,7 +1190,11 @@ def finish_map_scene(context,manifest,source='Original map layout'):
     report+='\n\nImport scope:\n'+'\n'.join(data.get('limitations',[]))
     if warnings:report+='\n\nMissing or approximated elements:\n'+'\n'.join(warnings)
     text=bpy.data.texts.get('HaloBridge map import report') or bpy.data.texts.new('HaloBridge map import report');text.clear();text.write(report)
-    _message=('Imported original map base' if source=='Original map layout' else 'Imported '+data['scenario'].rsplit('\\',1)[-1]+' from the Editing Kit')+': '+str(len(data['placements']))+' mesh placements; terrain BSPs '+str(data['decoded_bsps'])+'/'+str(data['expected_bsps'])+'. '+str(len(warnings))+' warnings. See map import report.'
+    _message=('Imported original map base' if source=='Original map layout'
+              else 'Imported Anniversary campaign level '+data['scenario'].rsplit('\\',1)[-1] if source=='Anniversary campaign'
+              else 'Imported '+data['scenario'].rsplit('\\',1)[-1]+' from the Editing Kit')+': '+str(len(data['placements']))+' mesh placements; terrain BSPs '+str(data['decoded_bsps'])+'/'+str(data['expected_bsps'])+'. '+str(len(warnings))+' warnings. See map import report.'
+    if freed:_message+=' Freed '+str(round(freed/2**20))+' MB of temporary geometry files.'
+    if faster_level_viewport(context):_message+=SHADOWS_OFF_NOTE
     if data['decoded_bsps']!=data['expected_bsps']:
         issues=['Incomplete import: '+str(data['decoded_bsps'])+'/'+str(data['expected_bsps'])+' terrain BSPs. This scene is not ready for Sapien preparation.']
         issues.extend(w for w in warnings if w.startswith('BSP '))
@@ -961,7 +1230,7 @@ class HBChooseScenario(bpy.types.Operator):
 
 
 class HBImportScenario(Guard,bpy.types.Operator):
-    bl_idname='halo_bridge.import_scenario';bl_label='Import level from .scenario (Recommended)'
+    bl_idname='halo_bridge.import_scenario';bl_label='Import level from .scenario'
     bl_description='Build the level from its Editing Kit .scenario tag: BSP geometry from the source files stored in the tags, every scenery, crate, machine, control and vehicle placement, and the tag shader on each surface. Unedited scenery stays original scenery when preparing for Sapien. Halo: Reach kits carry no source files, so Reach geometry comes from the installed map'
     def run(self,context):
         cfg=config(context);s=context.scene.halo_bridge
@@ -983,13 +1252,14 @@ class HBImportScenario(Guard,bpy.types.Operator):
         def done(manifest):
             global _message
             data=read_json(manifest)
-            yield from scenario_scene.import_scene(context,manifest,progress)
-            context.scene.halo_bridge.sky_scenario=data['scenario']
+            yield from scenario_scene.import_scene(context,manifest,progress,skies=context.scene.halo_bridge.import_sky)
+            if context.scene.halo_bridge.import_sky:context.scene.halo_bridge.sky_scenario=data['scenario']
             text=bpy.data.texts.get('HaloBridge scenario import report') or bpy.data.texts.new('HaloBridge scenario import report')
             text.clear();text.write(scenario_scene.report(data))
             warnings=data.get('warnings',[])
             _message=('Imported '+scenario_scene.leaf(data['scenario'])+' from the Editing Kit: '+str(len(data['placements']))+' objects; BSPs with source geometry '
                       +str(data['decoded_bsps'])+'/'+str(data['expected_bsps'])+'. '+str(len(warnings))+' notes. See HaloBridge scenario import report.')
+            if faster_level_viewport(context):_message+=SHADOWS_OFF_NOTE
             if data['decoded_bsps']!=data['expected_bsps']:
                 record_failure(ValidationError(['Some BSPs have no embedded source geometry: '+str(data['decoded_bsps'])+'/'+str(data['expected_bsps'])+' imported.']+[w for w in warnings if w.startswith('BSP ')],'Scenario import'))
                 bpy.ops.halo_bridge.report_diagnostics()
@@ -1051,6 +1321,18 @@ class HBViewDistance(bpy.types.Operator):
         scale=units.scale_length if units.system!='NONE' else 1.0
         count=compat.clear_view_fog(bpy.data.screens,unit_scale=scale)
         self.report({'INFO'},'View distance set on '+str(count)+' 3D View(s): Clip Start 0.1, Clip End 999999 (scene units).')
+        return {'FINISHED'}
+
+class HBViewportShadows(bpy.types.Operator):
+    bl_idname='halo_bridge.viewport_shadows';bl_label='Viewport Shadows'
+    bl_description='Turn EEVEE shadows on or off for this scene. Off is much faster on whole Halo levels and removes the "Shadow buffer full" error; Halo lighting is baked, so Material Preview looks almost the same. This is the Render Properties > Shadows setting'
+    @classmethod
+    def poll(cls,context):return compat.has_eevee_shadow_switch(context.scene)
+    def execute(self,context):
+        on=not compat.eevee_shadows(context.scene)
+        compat.set_eevee_shadows(context.scene,on)
+        self.report({'INFO'},'EEVEE shadows '+('on.' if on else 'off: faster viewport on large levels.'))
+        for area in context.screen.areas:area.tag_redraw()
         return {'FINISHED'}
 
 class HBGround(Guard,bpy.types.Operator):
@@ -1182,7 +1464,10 @@ class HBCustomMaterial(Guard,bpy.types.Operator):
     def run(self,context):
         global _message
         mat=editable_materials.make(context,self.mode)
-        _message='Created '+mat.name+'. Choose layer images or colors, then paint the mask. Save texture edits in the blend before closing. Preparation bakes the UV texture into a custom Halo shader.'
+        if editable_materials.exports_terrain_shader(mat):
+            _message='Created '+mat.name+'. Choose layer images and their repeat, then paint the mask (Add layer for up to four textures). Save texture edits in the blend before closing. Preparation exports a Halo 3 terrain shader.'
+        else:
+            _message='Created '+mat.name+'. Choose layer images or colors, then paint the mask. Save texture edits in the blend before closing. Preparation bakes the UV texture into a custom Halo shader.'
 
 class HBCustomLoadImage(Guard,bpy.types.Operator):
     bl_idname='halo_bridge.custom_load_image';bl_label='Load layer image';bl_options={'REGISTER','UNDO'}
@@ -1207,7 +1492,7 @@ class HBCustomPaint(Guard,bpy.types.Operator):
     bl_description='Paint the selected layer on the model in Texture Paint mode; uses the active UV map'
     paint_channel:IntProperty(default=-1)
     node_name:StringProperty(default='Paint Mask')
-    layer:EnumProperty(items=[('GRASS','Grass','Black mask: grass'),('ROCK','Rock','Red mask: rock'),('DIRT','Dirt','Green mask: dirt')])
+    layer:EnumProperty(items=[('GRASS','Grass','Black mask: grass'),('ROCK','Rock','Red mask: rock'),('DIRT','Dirt','Green mask: dirt'),('LAYER4','Layer 4','Blue mask: layer 4')])
     def run(self,context):
         obj=context.active_object;mat=obj.active_material if obj else None
         if not mat or not mat.get('hb_custom_shader'):raise RuntimeError('Select an editable material first.')
@@ -1224,9 +1509,18 @@ class HBCustomPaint(Guard,bpy.types.Operator):
         brush=compat.texture_paint_brush(context,paint,'HaloBridge Texture Draw')
         if self.node_name=='Paint Mask':
             palette=((1,0,0),(0,1,0),(0,0,1),(1,1,1),(0,0,0))
-            color=palette[self.paint_channel] if self.paint_channel>=0 else {'GRASS':(0,0,0),'ROCK':(1,0,0),'DIRT':(0,1,0)}[self.layer]
+            color=palette[self.paint_channel] if self.paint_channel>=0 else {'GRASS':(0,0,0),'ROCK':(1,0,0),'DIRT':(0,1,0),'LAYER4':(0,0,1)}[self.layer]
             compat.set_paint_color(context,paint,brush,color)
 
+
+class HBAddTerrainLayer(Guard,bpy.types.Operator):
+    bl_idname='halo_bridge.add_terrain_layer';bl_label='Add terrain layer';bl_options={'REGISTER','UNDO'}
+    bl_description='Add a fourth paintable layer (painted with blue in the mask). Halo 3 terrain shaders have at most four layers'
+    def run(self,context):
+        global _message
+        obj=context.active_object;mat=obj.active_material if obj else None
+        tex=editable_materials.add_terrain_layer(mat)
+        _message='Added '+tex.name+'. It starts as a copy of layer 1: choose its image, then paint it with its Paint button.'
 
 class HBCustomPack(Guard,bpy.types.Operator):
     bl_idname='halo_bridge.custom_pack';bl_label='Pack texture edits into blend'
@@ -1313,7 +1607,7 @@ class HBChooseSky(bpy.types.Operator):
     def execute(self,context):
         s=context.scene.halo_bridge
         s.sky_choice=self.choice;s.sky_selected=self.choice
-        s.sky_scenario=self.choice if self.choice!='AUTO' else 'levels\\multi\\deadlock\\deadlock'
+        s.sky_scenario=self.choice if self.choice!='AUTO' else 'levels\\multi\\isolation\\isolation'
         return {'FINISHED'}
 
 class HBChooseGameSky(Guard,bpy.types.Operator):
@@ -1329,12 +1623,19 @@ class HBChooseGameSky(Guard,bpy.types.Operator):
         asset=next((a for a in skies.catalogue_skies(s,game) if a['id']==self.choice),None)
         if asset is None:raise RuntimeError('That sky is no longer in the '+games.GAMES[game]['label']+' asset list. Index its map again.')
         stop_preview(context)
-        def done(path):
+        def done(result):
             global _message
+            path,lighting=result
             obj=sky_export.place(context,asset,path,cfg)
+            if lighting:obj['hb_sky_lighting']=json.dumps(lighting)  # the Halo 2 sky's sun and sky light
             _message='Sapien sky: '+asset['name']+' from '+games.GAMES[game]['label']+'. It is in the Sapien Sky collection and is rebuilt as a converted sky when you prepare the level.'
             context.view_layer.objects.active=obj
-        start(context,lambda cancel:jobs.extract(asset,cfg,cancel),done,'Extracting sky '+asset['name']+'…',undo=True)
+        def work(cancel):
+            path=jobs.extract(asset,cfg,cancel)
+            try:lighting=jobs.sky_lighting(asset,cfg,cancel)
+            except Exception:lighting=None  # the sky still works; its level is then lit with a Halo 3 sky
+            return path,lighting
+        start(context,work,done,'Extracting sky '+asset['name']+'…',undo=True)
 
 class HBSetSkyGame(bpy.types.Operator):
     bl_idname='halo_bridge.set_sky_game';bl_label='Sky game'
@@ -1401,6 +1702,13 @@ class HBActivityLog(bpy.types.Operator):
         if not text:return {'CANCELLED'}
         context.area.type='TEXT_EDITOR';context.area.spaces.active.text=text
         return {'FINISHED'}
+
+
+def remove_old_exports(folder):
+    """Each Prepare writes a new level_<time>.ASS (often over 1 GB); earlier ones are never read again."""
+    for old in Path(folder).glob('level_*.ASS'):
+        try:old.unlink()
+        except OSError:pass
 
 
 def prepare_status(message,running=False):
@@ -1496,6 +1804,40 @@ class HBConfirmPrepare(Guard,bpy.types.Operator):
         # error into a generic RuntimeError and overwrite its diagnostic report.
         return HBPrepare.run(self,context,warnings_accepted=True)
 
+class HBDecimateDense(Guard,bpy.types.Operator):
+    bl_idname='halo_bridge.decimate_dense';bl_label='Add Decimate to dense objects now';bl_options={'REGISTER','UNDO'}
+    bl_description='Add the Decimate modifier now (instead of when preparing) so you can check each object and change its Ratio in Modifier Properties first. Objects that already have it are left alone'
+    def run(self,context):
+        global _message
+        from . import dense_meshes
+        s=context.scene.halo_bridge
+        added=dense_meshes.add(context.scene,s.decimate_threshold,s.decimate_ratio)
+        _message=('Added a Decimate modifier ('+format(s.decimate_ratio,'.2f')+') to '+str(len(added))+' object(s): '+', '.join(o.name for o in added[:5])+(' ...' if len(added)>5 else '')+'. Select one and change its Ratio in Modifier Properties if needed.'
+                  if added else 'No exported object over '+format(s.decimate_threshold,',')+' triangles is missing the modifier.')
+
+class HBAddPortals(Guard,bpy.types.Operator):
+    bl_idname='halo_bridge.add_portals';bl_label='Add portal grid';bl_options={'REGISTER','UNDO'}
+    bl_description='Add vertical +portal planes across the level (one "HaloBridge Portals" object in a Portals collection, replacing an earlier grid). Halo Tool cuts the level structure into clusters at them: big or very dense levels stay under Halo 3\'s per-section limits and draw faster. Move or delete planes freely; any object made only of +portal faces is used'
+    def run(self,context):
+        global _message
+        from . import portals
+        s=context.scene.halo_bridge
+        units=float(context.scene.get('hb_working_units',100))
+        count=portals.add_grid(context.scene,s.portal_spacing,units)
+        _message=(str(count)+' +portal plane(s) added every '+format(s.portal_spacing,'g')+' world units.' if count else
+                  'The level is smaller than the spacing; no portal planes were needed.')
+
+class HBRetryRejected(Guard,bpy.types.Operator):
+    bl_idname='halo_bridge.retry_rejected';bl_label='Retry objects Tool rejected';bl_options={'REGISTER','UNDO'}
+    bl_description='Include the objects Halo Tool rejected in earlier preparations again (an object is also retried automatically once you change it)'
+    def run(self,context):
+        global _message
+        rejected=tool_rejected(context.scene)
+        for obj in rejected:
+            for key in ('hb_tool_rejected','hb_tool_rejected_shape'):
+                if key in obj:del obj[key]
+        _message=str(len(rejected))+' object(s) will be included in the next preparation.'
+
 class HBPrepare(Guard,bpy.types.Operator):
     bl_idname='halo_bridge.prepare';bl_label='Prepare current scene for sapien'
     bl_description='Compile current meshes, edits and modifiers as static geometry with generated surface collision; optionally build draft lighting, then test in Sapien'
@@ -1513,11 +1855,21 @@ class HBPrepare(Guard,bpy.types.Operator):
         return {'FINISHED'}
     def run(self,context,warnings_accepted=None):
         if warnings_accepted is None:warnings_accepted=self.warnings_accepted
+        if not _retrying:
+            # A new preparation starts from the usual portals and cluster size; the level may have changed.
+            for key in RETRY_SETTINGS:
+                if key in context.scene:del context.scene[key]
         prepare_status('Validating current scene...',True)
         reconcile_preview_copies(context)
+        s=context.scene.halo_bridge
+        if s.decimate_dense:
+            from . import dense_meshes
+            added=dense_meshes.add(context.scene,s.decimate_threshold,s.decimate_ratio)
+            if added:prepare_status('Added a Decimate modifier ('+format(s.decimate_ratio,'.2f')+') to '+str(len(added))+' object(s) over '+format(s.decimate_threshold,',')+' triangles: '+', '.join(o.name for o in added[:5])+(' ...' if len(added)>5 else ''),True)
         cfg=export_config(context)
         safe_level(cfg['level']);build.ensure_sapien_closed()
         out=Path(cfg['cache'])/'projects'/cfg['level']/'export'/('level_'+str(__import__('time').time_ns())+'.ASS');out.parent.mkdir(parents=True,exist_ok=True)
+        remove_old_exports(out.parent)
         last_redraw=[0.0]
         source_scene=context.scene.as_pointer()
         def report_progress(message):
@@ -1562,14 +1914,34 @@ class HBPrepare(Guard,bpy.types.Operator):
         _prepare_activity=PreparationActivity(Path(cfg['cache'])/'jobs'/('preparation-'+str(time.time_ns())+'.log'),report_progress)
         progress=_prepare_activity
         progress.stage(1,'Export current scene meshes')
-        placements=geometry_export.export(cfg,out,progress=progress)
-        report=bpy.data.texts.get('HaloBridge preparation report') or bpy.data.texts.new('HaloBridge preparation report')
-        report.clear();report.write('Current Blender meshes exported. Edits, transforms, modifiers and deletions are included.\nStructure geometry: '+cfg.get('structure_source','current scene')+'\nSky: '+(('converted from '+cfg['sky_object']['name']) if cfg.get('sky_object') else cfg.get('sky_scenario','default'))+'\n\n'+'\n'.join(warnings))
-        for name,route in cfg.get('collision_routes',{}).items():report.write(f'\n{name}: {route}')
-        if cfg.get('uv_repairs'):report.write('\n\nInvalid texture coordinates repaired (scene meshes unchanged):\n'+'\n'.join(cfg['uv_repairs']))
-        start(context,lambda cancel:build.prepare(cfg,out,placements,cancel,progress),done,'Compiling current scene geometry...')
-
-        _task.is_prepare=True
+        # The level file is written by the Halo toolset in background Blender processes,
+        # reusing every unchanged mesh from the last preparation (ass_parts.py).
+        cfg['ass_parts']=str(Path(cfg['cache'])/'projects'/cfg['level']/'ass_pieces');cfg['defer_ass']=True
+        def finish(placements):
+            report=bpy.data.texts.get('HaloBridge preparation report') or bpy.data.texts.new('HaloBridge preparation report')
+            report.clear();report.write('Current Blender meshes exported. Edits, transforms, modifiers and deletions are included.\nStructure geometry: '+cfg.get('structure_source','current scene')+'\nSky: '+(('converted from '+cfg['sky_object']['name']) if cfg.get('sky_object') else cfg.get('sky_scenario','default'))+'\n\n'+'\n'.join(warnings))
+            skipped=cfg.get('skipped_objects') or {}
+            if skipped:
+                report.write('\n\nLeft out (Skip objects with export problems):\n'+'\n'.join(name+': '+'; '.join(reasons) for name,reasons in skipped.items())+'\n')
+                progress('Left out '+str(len(skipped))+' object(s) with export problems; they are listed in the preparation report (HaloBridge preparation report in the Text Editor).')
+            for name,route in cfg.get('collision_routes',{}).items():report.write(f'\n{name}: {route}')
+            if cfg.get('uv_repairs'):report.write('\n\nInvalid texture coordinates repaired (scene meshes unchanged):\n'+'\n'.join(cfg['uv_repairs']))
+            job=cfg.pop('ass_job',None)
+            def compile(cancel):
+                if job:
+                    from . import ass_parts
+                    ass_parts.run(job,cancel,progress)
+                return build.prepare(cfg,out,placements,cancel,progress)
+            start(bpy.context,compile,done,'Compiling current scene geometry...')
+            _task.is_prepare=True
+        def exporting():
+            # Runs from poll() a little per tick, so Blender keeps redrawing and responding.
+            try:placements=yield from geometry_export.export_steps(cfg,out,progress=progress)
+            except ReferenceError as error:
+                raise RuntimeError('An object was deleted or changed while preparation was reading the scene ('+str(error)+'). Prepare again, and leave the scene alone until stage 2 starts.') from error
+            finish(placements)
+        start(context,lambda cancel:None,lambda result:exporting(),'Exporting current scene meshes...')
+        _task.is_prepare=True;_task.application_budget=.06
 
 
 def open_sapien(cfg):
@@ -1744,8 +2116,15 @@ class HBPanel(bpy.types.Panel):
             row=box.row();row.operator('halo_bridge.detect',depress=True);row.operator('halo_bridge.check_setup')
             row=box.row();row.enabled=_task is None;row.operator('halo_bridge.ground',depress=True)
             box.operator('halo_bridge.view_distance',icon='HIDE_OFF')
+            if compat.has_eevee_shadow_switch(context.scene):
+                shadows=compat.eevee_shadows(context.scene)
+                box.operator('halo_bridge.viewport_shadows',text='Viewport Shadows: On (Slower on large levels)' if shadows else 'Viewport Shadows: Off (Faster)',
+                             icon='LIGHT_SUN' if shadows else 'SHADING_SOLID',depress=not shadows)
+            row=box.row();row.enabled=_task is None
+            sky_state='ON' if s.import_sky else 'OFF'
+            row.prop(s,'import_sky',text='Import sky with the level: '+sky_state,toggle=True,icon='WORLD')
             if game.get('scenario_enabled'):
-                level=box.box();level.label(text='Import level from .scenario (Recommended)',icon='WORLD_DATA')
+                level=box.box();level.label(text='Import level from .scenario',icon='WORLD_DATA')
                 row=level.row(align=True);row.enabled=_task is None
                 row.prop(s,'scenario_path',text='')
                 row.operator('halo_bridge.choose_scenario',text='',icon='DOWNARROW_HLT')
@@ -1757,7 +2136,21 @@ class HBPanel(bpy.types.Panel):
                       else 'The kit\'s Tool builds a map from the tags first.' if game.get('classic')
                       else 'Reads the level tags directly. Textures from the matching .map.')
                 level.label(text=note,icon='INFO')
+            if s.game=='h2a':
+                # Halo 2: Anniversary campaign (Saber3D .pck), above the groundhog .map import.
+                campaign=box.box();campaign.label(text='Import Anniversary campaign level',icon='WORLD')
+                row=campaign.row(align=True);row.enabled=_task is None
+                row.prop(s,'h2a_campaign_level',text='')
+                row.operator('halo_bridge.choose_campaign_level',text='',icon='DOWNARROW_HLT')
+                row=campaign.row();row.enabled=_task is None;row.scale_y=1.2
+                row.operator('halo_bridge.import_h2a_campaign',icon='IMPORT',depress=True)
+                row=campaign.row();row.enabled=_task is None
+                row.operator('halo_bridge.index_h2a_campaign',icon='ASSET_MANAGER',depress=True)
+                row=campaign.row();row.enabled=_task is None
+                row.prop(s,'max_texture_size',text='Reduce Texture Size')
+                campaign.label(text='Remastered visuals from halo2\\preload\\paks, in Halo 2 coordinates.',icon='INFO')
             maps=box.box();maps.label(text='Import entire .map',icon='FILE_BLEND')
+            if s.game=='h2a':maps.label(text='Anniversary levels import from MCC\'s groundhog maps.',icon='INFO')
             maps.label(text='Choose .map file')
             row=maps.row(align=True);row.enabled=_task is None
             row.prop(s,'map_name',text='')
@@ -1866,6 +2259,12 @@ class HBPanel(bpy.types.Panel):
             if reason:
                 for line in textwrap.wrap(reason,width=max(24,int(context.region.width/7)-6)):box.label(text=line)
             active=context.active_object
+            if active and active.type=='MESH' and not vehicles.selected_vehicle(active) and not active.get('hb_preview'):
+                # The selected 3D object's own collision.
+                box.separator();box.label(text='Collision: '+active.name,icon='MOD_PHYSICS')
+                box.prop(active,'hb_static_collision',text='')
+                if len(getattr(context,'selected_objects',None) or ())>1:
+                    box.label(text='Right-click > Copy to Selected for all selected.',icon='INFO')
             if active and active.type=='MESH' and games.native(active) and games.GAMES[s.export_target]['sapien_enabled'] and active.get('hb_source_tag'):
                 box.separator();box.label(text='Original '+games.GAMES[s.export_target]['label']+' Vehicle',icon='AUTO')
                 for line in textwrap.wrap('3D object: '+active.name,width=max(24,int(context.region.width/7)-6)):box.label(text=line)
@@ -1897,10 +2296,6 @@ class HBPanel(bpy.types.Panel):
             row=box.row();row.enabled=active_material is not None and _task is None
             row.operator('halo_bridge.shader',icon='CHECKMARK')
             box.label(text='Sets the shader used in Sapien.')
-        if active and active.type=='MESH' and not vehicles.selected_vehicle(active):
-            _,box=compat.section(l,'hb_collision','Collision','MOD_PHYSICS')
-            if box:
-                box.prop(active,'hb_static_collision',text='Object collision')
         _,edit=compat.section(l,'hb_editable','Editable Materials (Experimental)','BRUSH_DATA')
         if edit:
             draw_editable_materials(edit,context)
@@ -1950,11 +2345,44 @@ class HBPanel(bpy.types.Panel):
                 box.label(text='Choose Halo 3 to prepare this scene.')
             return
         if box:
-            box.prop(s,'skip_invalid')
             box.label(text='Output Level Name (without .map)')
             box.prop(s,'level',text='')
             box.label(text='Current meshes: generated static collision.')
+            box.prop(s,'max_texture_size')
+            box.prop(s,'water_shader')
+            box.prop(s,'effect_standins')
+            box.prop(s,'decimate_dense')
+            if s.decimate_dense:
+                row=box.row(align=True);row.prop(s,'decimate_ratio');row.prop(s,'decimate_threshold')
+                row=box.row();row.enabled=_task is None
+                row.operator('halo_bridge.decimate_dense',icon='MOD_DECIM')
+                box.label(text='Adjust each object\'s ratio in Modifier Properties.',icon='INFO')
+            row=box.row(align=True);row.enabled=_task is None
+            row.operator('halo_bridge.add_portals',icon='MOD_BOOLEAN');row.prop(s,'portal_spacing')
+            box.prop(s,'skip_invalid')
+            rejected=tool_rejected(context.scene)
+            if rejected:
+                row=box.row();row.enabled=_task is None
+                row.operator('halo_bridge.retry_rejected',text='Retry '+str(len(rejected))+' object(s) Tool rejected',icon='FILE_REFRESH')
+            box.prop(s,'quick_test')
+            box.prop(s,'show_tool_markers')
             box.prop(s,'lighting')
+            if s.lighting:
+                box.prop(s,'h2_lightmaps')
+                if s.h2_lightmaps:
+                    # Halo 2 settings only while Halo 2's own lighting is used.
+                    h2=box.box();h2.label(text='Halo 2 lighting',icon='LIGHT_SUN')
+                    h2.prop(s,'h2_lightmap_brightness')
+                    h2.label(text='Halo 2 sky light (1 = default):')
+                    row=h2.row(align=True);row.prop(s,'h2_sun_strength');row.prop(s,'h2_sky_strength')
+                box.prop(s,'lighting_baker')
+                if s.lighting_baker=='H3LM':
+                    box.prop(s,'h3lm_path')
+                    row=box.row(align=True);row.prop(s,'h3lm_quality',text='Quality');row.prop(s,'h3lm_ao')
+                    box.prop(s,'h3lm_per_pixel')
+                    if not build.h3lm_exe(bpy.path.abspath(s.h3lm_path) if s.h3lm_path else ''):
+                        box.label(text='Choose the folder with h3lm-lm.exe.',icon='ERROR')
+                    if s.h3lm_ao:box.label(text='Ambient occlusion darkens corners and interiors.',icon='INFO')
             box.prop(s,'open_sapien')
         l.label(text='HaloBridge Warnings and Messages',icon='INFO')
         draw_messages(l,context)
@@ -2000,7 +2428,9 @@ def draw_editable_materials(edit,context):
         row.operator('halo_bridge.custom_material',text='Create paintable terrain').mode='terrain'
     row.operator('halo_bridge.custom_material',text='Create editable colors').mode='colors'
     if not (material and material.get('hb_custom_shader')):return
-    edit.label(text='Paint exports on this vehicle placement.' if vehicles.selected_vehicle(target) else 'Bakes to custom Halo 3 textures on preparation.')
+    edit.label(text='Paint exports on this vehicle placement.' if vehicles.selected_vehicle(target) else
+               'Exports as a Halo 3 terrain shader (full-resolution tiled layers).' if editable_materials.exports_terrain_shader(material) else
+               'Bakes to custom Halo 3 textures on preparation.')
     edit.prop(material,'hb_resolution',text='Texture resolution')
     edit.prop(material,'hb_show_repeat',text='Repeat settings',icon='TRIA_DOWN' if material.hb_show_repeat else 'TRIA_RIGHT',emboss=False)
     nodes=material.node_tree.nodes
@@ -2022,7 +2452,8 @@ def draw_editable_materials(edit,context):
         # Layered Halo terrain has up to four shaders (blend channels R, G, B, A); the
         # fallback terrain editor has three. Each one collapses to a header with its Paint button.
         groups=[('Shader '+str(i+1),'Shader '+str(i+1),i,None) for i in range(len(layers))] if layers else \
-               [('Grass','Shader 1',0,'GRASS'),('Rock','Shader 2',1,'ROCK'),('Dirt','Shader 3',2,'DIRT')]
+               [('Grass','Shader 1',0,'GRASS'),('Rock','Shader 2',1,'ROCK'),('Dirt','Shader 3',2,'DIRT'),('Layer 4','Shader 4',3,'LAYER4')]
+        groups=[g for g in groups if layers or nodes.get(g[0])]
         for node_name,title,index,legacy in groups:
             node=nodes.get(node_name)
             texture=node.label if node and node.label and node.label!=node_name else ''
@@ -2034,6 +2465,9 @@ def draw_editable_materials(edit,context):
                 for suffix,label in (('',title),(' Detail',title+' detail'),(' Normal',title+' normal')):image_row(body,node_name+suffix,label)
             else:
                 shown.update(node_name+suffix for suffix in ('',' Detail',' Normal'))
+        count=editable_materials.terrain_layer_count(material) if editable_materials.exports_terrain_shader(material) else editable_materials.MAX_TERRAIN_LAYERS
+        if count<editable_materials.MAX_TERRAIN_LAYERS:
+            edit.operator('halo_bridge.add_terrain_layer',text='Add layer '+str(count+1)+(' (paint with white)' if layers else ' (paint with blue)'),icon='ADD')
         if layers:
             image_row(edit,'Original Blend')
             edit.operator('halo_bridge.custom_paint',text='Paint original blend').paint_channel=4
@@ -2051,12 +2485,23 @@ def draw_editable_materials(edit,context):
     edit.label(text='Use one UV tile (0–1). Original tags stay unchanged.')
 
 
-classes=(HBChooseScenario,HBImportScenario,HBIndexScenario,HBCustomMaterial,HBCustomLoadImage,HBCustomPaint,HBCustomPack,HBReadShaderTextures,HBModelRegionExpand,HBModelPartToggle,HBModelPartsSeparate,HBChooseMap,HBFindVehicle,HBChooseVehicle,HBVehicleStatic,HBActivityLog,HBApplyExtracted,HBAsset,HBSettings,HBDetect,HBCheckSetup,HBScan,HBIndex,HBPlace,HBClearSearch,HBCheckAssets,HBListHistory,HBListAction,HBPlaceChecked,HBImportMapScene,HBViewDistance,HBPreviewToggle,HBGround,HBScanShaders,HBChooseShader,HBShader,HBChooseSky,HBChooseGameSky,HBSetSkyGame,HBRemoveGameSky,HBRefreshSkies,HBPrepare,HBConfirmPrepare,HBOpen,HBResolve,HBCancel,HBDiagnostics,HBReportDiagnostics,HBSelectCollisionIssues,HBCenterMapOrigins,HB_UL_assets,HBMessages,HBMessagesPopover,HBPanel)
+classes=(HBChooseScenario,HBImportScenario,HBIndexScenario,HBCustomMaterial,HBCustomLoadImage,HBCustomPaint,HBAddTerrainLayer,HBCustomPack,HBReadShaderTextures,HBModelRegionExpand,HBModelPartToggle,HBModelPartsSeparate,HBChooseMap,HBFindVehicle,HBChooseVehicle,HBVehicleStatic,HBActivityLog,HBApplyExtracted,HBAsset,HBSettings,HBDetect,HBCheckSetup,HBScan,HBIndex,HBIndexH2ACampaign,HBPlace,HBClearSearch,HBCheckAssets,HBListHistory,HBListAction,HBPlaceChecked,HBImportMapScene,HBChooseCampaignLevel,HBImportH2ACampaign,HBViewDistance,HBViewportShadows,HBPreviewToggle,HBGround,HBScanShaders,HBChooseShader,HBShader,HBChooseSky,HBChooseGameSky,HBSetSkyGame,HBRemoveGameSky,HBRefreshSkies,HBDecimateDense,HBAddPortals,HBRetryRejected,HBPrepare,HBConfirmPrepare,HBOpen,HBResolve,HBCancel,HBDiagnostics,HBReportDiagnostics,HBSelectCollisionIssues,HBCenterMapOrigins,HB_UL_assets,HBMessages,HBMessagesPopover,HBPanel)
+
+def shadows_off_by_default():
+    """Viewport Shadows start Off (faster) once per scene; the button's later choice is kept."""
+    for scene in bpy.data.scenes:
+        try:
+            if scene.get('hb_shadows_default') or not compat.has_eevee_shadow_switch(scene):continue
+            compat.set_eevee_shadows(scene,False);scene['hb_shadows_default']=True
+        except Exception:pass  # restricted context while a file is loading; the next load retries
 
 @persistent
 def load_catalogue(_=None):
     global _catalogue,_message
     s=bpy.context.scene.halo_bridge
+    shadows_off_by_default()
+    from . import regular_preview
+    for mat in bpy.data.materials:regular_preview.refresh_gain(mat)
     changed,folders=source_names.restore()
     if folders and not _task:
         def done(unresolved):
@@ -2077,7 +2522,7 @@ def register():
     for cls in classes:bpy.utils.register_class(cls)
     bpy.types.VIEW3D_HT_header.append(draw_message_header)
     bpy.types.Scene.halo_bridge=PointerProperty(type=HBSettings)
-    bpy.types.Object.hb_static_collision=EnumProperty(name='Static collision',items=[('AUTO','(Default) Automatic','Prefer matching original collision from the source Editing Kit, then use a box or mesh fallback'),('SURFACE','Mesh surfaces','Build collision from eligible material surfaces'),('BOX','Simple box','Use one solid bounding box around eligible geometry, including gaps inside it')],default='AUTO')
+    bpy.types.Object.hb_static_collision=EnumProperty(name='Static collision',items=[('AUTO','(Default) Automatic','Prefer matching original collision from the source Editing Kit, then use a box or mesh fallback'),('SURFACE','Mesh surfaces','Build collision from eligible material surfaces'),('BOX','Simple box','Use one solid bounding box around eligible geometry, including gaps inside it'),('NO_LEAVES','No leaf collision','Vegetation: see-through surfaces (leaf cards, cut-out or blended materials) are walked through; trunks and other solid surfaces keep their collision'),('NONE','No collision','Rendered only: players, vehicles and projectiles pass through the whole object')],default='AUTO')
     bpy.types.Material.hb_show_repeat=BoolProperty(default=False)
     bpy.types.Material.hb_resolution=EnumProperty(items=[(str(n),str(n),'',n) for n in (512,1024,2048,4096)],get=lambda m:int(m.get('hb_bake_size',1024)),set=lambda m,n:m.__setitem__('hb_bake_size',n))
     bpy.types.Material.hb_collision_mode=EnumProperty(name='Export collision',description='Controls collision generated from this material during static scene export',items=[('AUTO','Automatic','Halo foliage shaders and explicit render-only materials do not generate collision; other surfaces remain collidable'),('SOLID','Collidable','Generate collision from these surfaces, including foliage'),('RENDER_ONLY','Render only (no collision)','Keep these surfaces visible but omit them from collision; useful for leaf cards and decorative foliage')],default='AUTO')

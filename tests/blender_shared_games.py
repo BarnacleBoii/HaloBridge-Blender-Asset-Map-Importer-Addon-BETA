@@ -46,6 +46,15 @@ with tempfile.TemporaryDirectory() as folder:
     assert s.level=='shared_level' and s.sky_selected==r'levels\multi\shrine\shrine'
     s.game='halo3'
     assert ui.export_config(bpy.context)==before
+    # A Halo 3 profile saved with a blank storage folder must not resolve against
+    # Blender's own folder when importing Halo 2 and preparing for Halo 3.
+    import json
+    s.cache='';s.game='halo2'
+    assert json.loads(s.game_profiles)['halo3']['cache'],s.game_profiles
+    profiles=json.loads(s.game_profiles);profiles['halo3']['cache']='';s.game_profiles=json.dumps(profiles)
+    routed=ui.export_config(bpy.context)
+    assert routed['game']=='halo3' and Path(routed['cache']).is_absolute(),routed['cache']
+    s.game='halo3';s.cache=folder
     for name in ('halo_bridge.index','halo_bridge.import_map_scene'):
         assert next(row[2] for row in drawn if row[:2]==('operator',name))['depress']
     labels=[row[1] for row in drawn if row[0]=='label']

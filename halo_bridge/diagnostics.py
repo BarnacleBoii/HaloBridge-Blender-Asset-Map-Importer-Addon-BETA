@@ -17,7 +17,9 @@ def compiler_errors(text, completed_structure=None):
     issues = list(dict.fromkeys(line.strip() for line in text.splitlines()
                                 if any(marker in line for marker in markers)))
     if completed_structure and f"=== imported structure '{completed_structure}' in " in text:
-        issues = [line for line in issues if not _instance_edge.fullmatch(line)]
+        # "failed to add import info": Tool couldn't embed a copy of a very large source
+        # file in the tag (re-import bookkeeping only); the structure itself imported.
+        issues = [line for line in issues if not _instance_edge.fullmatch(line) and 'failed to add import info' not in line]
     return issues
 
 def geometry_warnings(text,names):

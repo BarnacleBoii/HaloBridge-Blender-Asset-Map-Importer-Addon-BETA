@@ -68,13 +68,15 @@ To paint the starter ground with grass, rock and dirt, see [Paint terrain](EDITA
 
 ## 4. Check collision
 
-Select an object and open **Collision → Object collision**:
+Select an object and open **Selected Asset**. Under **Collision: ‹object name›**, choose:
 
 - **(Default) Automatic** — uses the object's original collision when HaloBridge can prove the mesh is unchanged, otherwise a sensible fallback (a box for characters and shields, the mesh's own surfaces for everything else). Leave this for almost everything.
 - **Mesh surfaces** — the object's own faces are solid.
 - **Simple box** — one solid box around the object. Useful for detailed props you only need to bump into.
+- **No leaf collision** — for trees and plants: leaves are walked through, trunks stay solid.
+- **No collision** — the object is only drawn; everything passes through it.
 
-Foliage (leaves using Halo's foliage shader) is automatically walk-through. To make another material walk-through, tick the Halo toolset's **Render Only** flag on that material in Blender's **Material Properties**.
+To set several objects at once, select them with the one you've set active, right-click the choice and use **Copy to Selected**. Foliage (leaves using Halo's foliage shader) is automatically walk-through. To make one material walk-through, tick the Halo toolset's **Render Only** flag on that material in Blender's **Material Properties**.
 
 ## 5. Choose a sky
 
@@ -84,7 +86,7 @@ Open **Sapien Sky (Experimental)**:
 2. Click **Scan for map skies** (it reads your H3EK tags, so it may take a few seconds the first time).
 3. Choose a level from the **Sky** drop-down, for example `guardian`.
 
-If you don't choose one, HaloBridge uses the sky of the level you imported, or Deadlock (High Ground). To use a Halo: CE, Halo 2, ODST or Reach sky, choose that **Game** instead; see [Use a sky from another game](IMPORTING.md#use-a-sky-from-another-game).
+If you don't choose one, HaloBridge uses the sky of the level you imported, or Isolation. To use a Halo: CE, Halo 2, ODST or Reach sky, choose that **Game** instead; see [Use a sky from another game](IMPORTING.md#use-a-sky-from-another-game).
 
 ## 6. Set up the build
 
@@ -127,7 +129,7 @@ Add game types, weapons, spawns and other gameplay in Sapien; HaloBridge only bu
 
 ### Start from an existing level
 
-Import a level with **Import level from .scenario (Recommended)** (or **Import entire .map** for levels without kit tags), edit it, and prepare it under a new name. Unedited scenery and vehicles keep their original tags; everything else becomes static geometry. Whole levels can need cleanup before Tool accepts them, and very large levels take a long time to compile.
+Import a level with **Import level from .scenario** (or **Import entire .map** for levels without kit tags), edit it, and prepare it under a new name. Unedited scenery and vehicles keep their original tags; everything else becomes static geometry. Whole levels can need cleanup before Tool accepts them, and very large levels take a long time to compile.
 
 ### Keep a vehicle drivable
 

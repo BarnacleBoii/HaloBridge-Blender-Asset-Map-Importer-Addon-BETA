@@ -111,7 +111,10 @@ namespace Reclaimer.Blam.Halo2
                 CubeMipLayout = MipmapLayout.Fragmented
             };
 
-            if (submap.BitmapFormat == TextureFormat.A8R8G8B8)
+            // HaloBridge: MCC PC maps store uncompressed 32-bit bitmaps as plain rows
+            // (no Xbox pitch padding), so the registration point must not widen them.
+            // Widening shifted every row and turned e.g. Coagulation's coag_moon2 into stripes.
+            if (submap.BitmapFormat == TextureFormat.A8R8G8B8 && Cache.Metadata.Platform == CachePlatform.Xbox)
             {
                 props.VirtualWidth = (int)(Math.Ceiling(submap.Width / 16d) * 16d);
                 props.VirtualHeight = submap.Height;

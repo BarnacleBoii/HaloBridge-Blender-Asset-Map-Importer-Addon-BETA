@@ -43,7 +43,8 @@ def category(name):
 # Editing Kit folder, MCC maps subfolder and Osoyoos generation per game.
 GAME_FOLDERS = {'halo3': ('H3EK', 'halo3', 'halo3'), 'odst': ('H3ODSTEK', 'halo3odst', 'halo3odst'),
                 'reach': ('HREK', 'haloreach', 'haloreach'),
-                'halo1': ('HCEEK', 'halo1', 'halo1'), 'halo2': ('H2EK', 'halo2', 'halo2')}
+                'halo1': ('HCEEK', 'halo1', 'halo1'), 'halo2': ('H2EK', 'halo2', 'halo2'),
+                'h2a': ('H2AMPEK', 'groundhog', 'groundhog')}
 # MCC map folders that are not <game>/maps.
 MAP_FOLDERS = {'halo2': 'halo2/h2_maps_win64_dx11'}
 
